@@ -1,18 +1,31 @@
+#include <Adafruit_NeoPixel.h>
 #include <Arduino.h>
 
-// put function declarations here:
-int myFunction(int, int);
+#ifndef PIN_RGB_LED
+#define PIN_RGB_LED 48
+#endif
+
+static Adafruit_NeoPixel rgb(1, PIN_RGB_LED, NEO_GRB + NEO_KHZ800);
+
+static void setColor(uint8_t r, uint8_t g, uint8_t b) {
+  rgb.setPixelColor(0, rgb.Color(r, g, b));
+  rgb.show();
+}
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  rgb.begin();
+  rgb.setBrightness(80);
+  setColor(0, 0, 0);
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
+  setColor(255, 0, 0);
+  delay(120);
+  setColor(0, 0, 0);
+  delay(40);
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  setColor(0, 0, 255);
+  delay(120);
+  setColor(0, 0, 0);
+  delay(40);
 }
