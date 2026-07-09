@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+# 生成墨屏「设备配网」画面资源
+
 # 运行命令
 # cd "/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen"
 # ~/.platformio/penv/bin/python scripts/gen_config_screen.py
@@ -8,8 +10,8 @@
 """生成墨屏「设备配网」画面资源。
 
 布局参考 docs/UI设计稿/单片机/ai_studio_code.html（400×800 等比放大到 480×800）。
-字体：细体黑体优先（Noto Sans SC Light / 思源黑体 Light / 华文细黑），全页统一字重，用颜色区分层级。
-渲染：480×800 原生像素直接绘制 → 六色最近邻量化（与 InkTime 一致，不做 2×+LANCZOS，避免灰阶边缘发糊）
+字体：SimSun 宋体（FONT_CANDIDATES 首位），全页统一字重，用颜色区分层级。
+渲染：1-bit 位图绘制（无抗锯齿）→ 480×800 原生像素 → 六色最近邻量化
 
 用法：~/.platformio/penv/bin/python scripts/gen_config_screen.py
 """
@@ -19,23 +21,24 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.path.dirname(HERE)  # jnr_ink_screen
+PROJECT_ROOT = os.path.dirname(ROOT)  # 纪念日小程序全盏
 SCREEN_H = os.path.join(ROOT, "lib", "wifi_setup", "ui_config_screen.h")
 FONT_H = os.path.join(ROOT, "lib", "epd", "font12x24.h")
-PREVIEW = os.path.join(ROOT, "docs", "UI设计稿", "单片机", "预览效果图", "配网页面-墨屏预览.png")
-QR_PATH = os.path.join(ROOT, "docs", "UI设计稿", "单片机", "配网二维码.png")
-ICON_DIR = os.path.join(ROOT, "docs", "UI设计稿", "单片机", "素材")
+PREVIEW = os.path.join(PROJECT_ROOT, "docs", "UI设计稿", "单片机", "预览效果图", "配网页面-墨屏预览.png")
+QR_PATH = os.path.join(PROJECT_ROOT, "docs", "UI设计稿", "单片机", "配网二维码.png")
+ICON_DIR = os.path.join(PROJECT_ROOT, "docs", "UI设计稿", "单片机", "素材")
 ICON_WIFI = os.path.join(ICON_DIR, "wifi.png")
 ICON_MAC = os.path.join(ICON_DIR, "路由器.png")
 
 W, H = 480, 800
 # 细体黑体：笔画粗细均匀（与 ai_studio_code.html 系统 UI 字重接近）
 FONT_CANDIDATES = [
-    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen/docs/字体库/点阵/ark-pixel-12px-monospaced-zh_cn.ttf", 0),
-    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen/docs/字体库/点阵/ark-pixel-inherited-12px-monospaced.ttf", 0),
-    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen/docs/字体库/仿宋_GB2312/仿宋_GB2312.ttf", 0),
-    ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen/docs/字体库/windows XP 宋体/simsun.ttc", 0),
-    ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/jnr_ink_screen/docs/字体库/SanJiSongHeiTi-Xi/SanJiSongHeiTi-Xi-2.ttf", 0),
+    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/点阵/ark-pixel-12px-monospaced-zh_cn.ttf", 0),
+    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/点阵/ark-pixel-inherited-12px-monospaced.ttf", 0),
+    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/仿宋_GB2312/仿宋_GB2312.ttf", 0),
+    ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/windows XP 宋体/simsun.ttc", 0),
+    ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/SanJiSongHeiTi-Xi/SanJiSongHeiTi-Xi-2.ttf", 0),
     ("/System/Library/Fonts/STHeiti Light.ttc", 0),
     ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
 ]
@@ -162,6 +165,26 @@ def draw_step_connectors(d, n, item_h, ty, step_cx, step_r):
             d.line((step_cx, y1, step_cx, y2), fill=RGB_BLACK, width=1)
 
 
+def draw_step_digit(d, cx, cy, n):
+    """手绘步骤数字：避免 TrueType 小字号抗锯齿量化后笔画残缺（尤其「4」）。"""
+    # 7×9 网格，原点在字形左上；整体相对圆心居中
+    ox, oy = cx - 3, cy - 4
+    px = {
+        1: [(3, 0), (2, 1), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6),
+            (3, 7), (3, 8), (2, 8), (4, 8)],
+        2: [(1, 0), (2, 0), (3, 0), (4, 0), (5, 1), (5, 2), (4, 3), (3, 4),
+            (2, 5), (1, 6), (1, 7), (1, 8), (2, 8), (3, 8), (4, 8), (5, 8)],
+        3: [(1, 0), (2, 0), (3, 0), (4, 0), (5, 1), (5, 2), (4, 3), (2, 3),
+            (3, 3), (5, 4), (5, 5), (5, 6), (4, 7), (1, 8), (2, 8), (3, 8),
+            (4, 8)],
+        4: [(1, 0), (1, 1), (1, 2), (1, 3), (1, 4), (2, 4), (3, 4), (4, 4),
+            (5, 4), (4, 0), (4, 1), (4, 2), (4, 3), (4, 5), (4, 6), (4, 7),
+            (4, 8)],
+    }[n]
+    for x, y in px:
+        d.point((ox + x, oy + y), fill=RGB_BLACK)
+
+
 def resolve_font():
     for path, idx in FONT_CANDIDATES:
         if not os.path.isfile(path):
@@ -184,9 +207,23 @@ def tfont(size, font_path=None, font_index=None):
         index=FONT_INDEX if font_index is None else font_index)
 
 
+def paste_text(img, x, y, text, size, fill, font_path=None, font_index=None):
+    """1-bit 画布绘制后粘贴：SimSun 走像素栅格，避免 RGB 抗锯齿量化发虚。"""
+    if not text:
+        return
+    font = tfont(size, font_path, font_index)
+    bbox = font.getbbox(text)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if w <= 0 or h <= 0:
+        return
+    mono = Image.new("1", (w, h), 0)
+    ImageDraw.Draw(mono).text((-bbox[0], -bbox[1]), text, font=font, fill=1)
+    img.paste(Image.new("RGB", (w, h), fill), (x, y), mono)
+
+
 def _text_width(text, size):
-    return ImageDraw.Draw(Image.new("L", (1, 1))).textlength(
-        text, font=tfont(size))
+    bbox = tfont(size).getbbox(text)
+    return bbox[2] - bbox[0]
 
 
 def render_frame(include_mac=False):
@@ -215,21 +252,19 @@ def render_frame(include_mac=False):
     item_h = LY["steps_item_h"]
     draw_step_connectors(d, 4, item_h, LY["steps_ty"], step_cx, LY["step_r"])
 
-    def font(size, fp=None, fi=None):
-        return tfont(size, fp, fi)
-
     def put(x, y, text, size, fill, fp=None, fi=None):
-        d.text((x, y), text, font=font(size, fp, fi), fill=fill)
+        paste_text(img, x, y, text, size, fill, fp, fi)
 
     def put_c(cx, y, text, size, fill, fp=None, fi=None):
-        f = font(size, fp, fi)
-        tw = d.textlength(text, font=f)
-        d.text((cx - tw / 2, y), text, font=f, fill=fill)
+        font = tfont(size, fp, fi)
+        bbox = font.getbbox(text)
+        tw = bbox[2] - bbox[0]
+        paste_text(img, int(cx - tw / 2), y, text, size, fill, fp, fi)
 
     def sec_hdr(y, title, size):
         cy = y + size // 2
-        f = font(size)
-        tw = d.textlength(title, font=f)
+        bbox = tfont(size).getbbox(title)
+        tw = bbox[2] - bbox[0]
         text_l = W // 2 - tw / 2
         text_r = W // 2 + tw / 2
         pad = 10
@@ -238,11 +273,11 @@ def render_frame(include_mac=False):
         put_c(W // 2, y, title, size, C_TITLE)
 
     cx, X = W // 2, LY["lbl_x"]
-    sec_hdr(LY["hdr_main_y"], "设备配网", 18)  # SimSun 仅 12/14/16/18 有点阵，20px 走矢量抗锯齿会缺笔划
+    sec_hdr(LY["hdr_main_y"], "设备配网", 18)
     put_c(cx, LY["cap_y"], "扫描二维码进行设备配网", 16, C_GRAY)
 
     sec_hdr(LY["hdr_info_y"], "设备信息", 18)
-    put(X, LY["lbl1_y"], "Wi-Fi 名称 (SSID)", 16, C_GRAY)
+    put(X, LY["lbl1_y"], "WI-FI 名称 (SSID)", 16, C_GRAY)
     put(X, LY["val1_y"], "DayIJoy-心选日", 18, C_ACCENT)
     put(X, LY["lbl2_y"], "设备 MAC 地址", 16, C_GRAY)
     mac_x, mac_y = X, LY["mac_y"]
@@ -251,20 +286,19 @@ def render_frame(include_mac=False):
 
     sec_hdr(LY["hdr_steps_y"], "使用事项", 18)
     steps = [
-        ("连接设备 Wi-Fi", "在列表中选择 DayIJoy-心选日"),
-        ("打开配置页面", "自动打开或手动访问 192.168.8.1"),
-        ("配置网络", "选择路由器名称并输入密码完成配网"),
+        ("连接设备 WI-FI", "在列表中选择 DayIJoy-心选日"),
+        ("打开配置页面", "自动打开或手动访问 http://192.168.8.1"),
+        ("配置网络", "选择WI-FI名称并输入密码完成配网"),
         ("注意事项", "保持通电靠近；成功后设备将自动重启"),
     ]
     text_x = LY["M"] + 56
-    badge_cols = [C_ACCENT, C_GREEN, C_ORANGE, C_RED]
     for i, (title, desc) in enumerate(steps):
         y = LY["steps_ty"] + i * LY["steps_item_h"]
         bcy = y + LY["steps_item_h"] // 2
         br = LY["step_r"]
         d.ellipse((step_cx - br, bcy - br, step_cx + br, bcy + br),
-                  fill=badge_cols[i])
-        put_c(step_cx, bcy - 8, str(i + 1), 14, RGB_WHITE)
+                  fill=RGB_WHITE, outline=RGB_BLACK, width=1)
+        draw_step_digit(d, step_cx, bcy, i + 1)
         put(text_x, y, title, LY["steps_title_sz"], RGB_BLACK)
         put(text_x, y + LY["steps_desc_dy"], desc, LY["steps_desc_sz"], C_BODY)
 
@@ -383,12 +417,14 @@ def emit_screen_header(rle_buf, mac_xy):
 
 
 def glyph_rows(ch, cell_w=12, cell_h=24):
-    gs = 4
-    f = tfont(18 * gs, MAC_FONT, MAC_FONT_INDEX)
-    hi = Image.new("L", (cell_w * gs, cell_h * gs), 0)
-    ImageDraw.Draw(hi).text((0, gs // 2), ch, font=f, fill=255)
-    lo = hi.resize((cell_w, cell_h), Image.Resampling.LANCZOS)
-    px = lo.load()
+    f = tfont(cell_h, MAC_FONT, MAC_FONT_INDEX)
+    bbox = f.getbbox(ch)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    mono = Image.new("1", (cell_w, cell_h), 0)
+    ImageDraw.Draw(mono).text(
+        ((cell_w - w) // 2 - bbox[0], (cell_h - h) // 2 - bbox[1]),
+        ch, font=f, fill=1)
+    px = mono.load()
     rows = []
     for y in range(cell_h):
         b0 = b1 = 0
