@@ -143,6 +143,8 @@ static void runSyncWithLed() {
     ledModeIdle();
   } else {
     ledFail();
+    // 失败时刷 ASCII 提示，避免只剩白屏不知原因
+    wifi_setup::showSyncFailScreen();
   }
 }
 

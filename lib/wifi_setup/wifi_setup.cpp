@@ -75,8 +75,8 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   .item.sel{background:#eaf2ff}
   .rssi{font-size:12px;color:#888}
   .tip{font-size:12px;color:#888;margin-top:6px}
-  .ok{color:#16a34a}
-  .err{color:#dc2626}
+  .tip.ok{color:#16a34a}
+  .tip.err,.item.err{color:#dc2626}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
 </style>
 </head>
@@ -166,10 +166,10 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
   button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
   button:active{background:#2563eb}
   button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
-  button.ok{background:#16a34a}
+  button.ok{background:#16a34a;color:#fff}
   .tip{font-size:12px;color:#888;margin-top:8px}
-  .ok{color:#16a34a}
-  .err{color:#dc2626}
+  .tip.ok{color:#16a34a}
+  .tip.err{color:#dc2626}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
 </style>
 </head>
@@ -234,7 +234,7 @@ async function load(){
     $('apiBaseBak').value=j.apiBaseBak||'';
     $('syncHour').value=String(hour);
   }catch(e){
-    $('info').innerHTML='<div class="row"><span class="k">错误</span><span class="v err">加载失败</span></div>';
+    $('info').innerHTML='<div class="row"><span class="k">错误</span><span class="v" style="color:#dc2626">加载失败</span></div>';
   }
 }
 async function saveApi(){
@@ -521,7 +521,8 @@ void handleApiBase() {
 void handleFinish() {
   if (WiFi.status() == WL_CONNECTED) saveCurrentStaIp();
   server.send(200, "text/plain; charset=utf-8", "即将重启...");
-  Serial.println("[wifi_setup] 用户完成配置，重启");
+  Serial.printf("[wifi_setup] 用户完成配置，apiBase=%s，重启\n",
+                readApiBaseFromNvs().c_str());
   delay(800);
   ESP.restart();
 }
@@ -599,6 +600,30 @@ void setupHttpSta() {
 
 }  // namespace
 
+namespace {
+
+// 全刷约 12–20s；连续两次 flush 过近时面板易白屏，强制冷却后再刷。
+uint32_t g_lastFlushMs = 0;
+constexpr uint32_t kFlushCooldownMs = 2000;
+
+bool flushWithCooldown(const char* tag) {
+  uint32_t now = millis();
+  if (g_lastFlushMs != 0 && (now - g_lastFlushMs) < kFlushCooldownMs) {
+    delay(kFlushCooldownMs - (now - g_lastFlushMs));
+  }
+  bool ok = epd::flush();
+  if (!ok) {
+    Serial.printf("[wifi_setup] %s 刷屏超时，重试\n", tag);
+    delay(500);
+    ok = epd::flush();
+  }
+  g_lastFlushMs = millis();
+  if (!ok) Serial.printf("[wifi_setup] %s 刷屏失败\n", tag);
+  return ok;
+}
+
+}  // namespace
+
 void showConfigScreen() {
   epd::clear(epd::WHITE);
   epd::drawImageRle(kCfgScreenRle, kCfgScreenRleLen);
@@ -607,7 +632,7 @@ void showConfigScreen() {
   epd::drawText(CFG_MAC_X, CFG_MAC_Y, mac.c_str(), CFG_MAC_COLOR, CFG_MAC_SCALE);
 
   Serial.printf("[wifi_setup] 刷出配网画面 MAC=%s\n", mac.c_str());
-  if (!epd::flush()) Serial.println("[wifi_setup] 刷屏超时");
+  flushWithCooldown("配网画面");
 }
 
 void showReadyScreen() {
@@ -618,7 +643,7 @@ void showReadyScreen() {
   String mac = WiFi.macAddress();
   String url = "http://" + ip + "/device";
 
-  // 竖屏简单排版（当前字库仅 ASCII）
+  // 竖屏简单排版（当前字库仅 ASCII）；用黑字保证对比度
   epd::drawText(40, 80, title, epd::BLACK, 2);
   epd::drawText(40, 160, "LAN IP:", epd::BLACK, 2);
   epd::drawText(40, 200, ip.c_str(), epd::BLACK, 2);
@@ -630,7 +655,28 @@ void showReadyScreen() {
   epd::drawText(40, 560, "then Finish.", epd::BLACK, 2);
 
   Serial.printf("[wifi_setup] 就绪画面 IP=%s\n", ip.c_str());
-  if (!epd::flush()) Serial.println("[wifi_setup] 刷屏超时");
+  flushWithCooldown("就绪画面");
+}
+
+void showSyncFailScreen() {
+  epd::clear(epd::WHITE);
+  String base = apiBase();
+  epd::drawText(40, 80, "Sync failed", epd::BLACK, 2);
+  epd::drawText(40, 160, "Check apiBase:", epd::BLACK, 2);
+  // 地址可能较长，分两行粗略截断
+  if (base.length() <= 28) {
+    epd::drawText(40, 220, base.c_str(), epd::BLACK, 1);
+  } else {
+    String a = base.substring(0, 28);
+    String b = base.substring(28);
+    epd::drawText(40, 220, a.c_str(), epd::BLACK, 1);
+    epd::drawText(40, 260, b.c_str(), epd::BLACK, 1);
+  }
+  epd::drawText(40, 340, "Local: no /api", epd::BLACK, 2);
+  epd::drawText(40, 400, "Long-press Action", epd::BLACK, 2);
+  epd::drawText(40, 460, "to retry sync.", epd::BLACK, 2);
+  Serial.printf("[wifi_setup] sync 失败提示 apiBase=%s\n", base.c_str());
+  flushWithCooldown("sync失败提示");
 }
 
 void applySavedStaticIp() {

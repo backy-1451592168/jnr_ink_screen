@@ -19,6 +19,9 @@ void showConfigScreen();
 // 联网成功后的简要信息屏：局域网 IP / MAC / 浏览器地址（ASCII）。
 void showReadyScreen();
 
+// sync 失败时的 ASCII 提示屏（含当前 apiBase），避免白屏不知原因。
+void showSyncFailScreen();
+
 // 启动 AP + DNS 劫持 + HTTP 配网服务，并刷出配网画面。
 void startAP();
 
