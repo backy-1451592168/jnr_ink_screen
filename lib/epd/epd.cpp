@@ -128,6 +128,14 @@ void drawImageRle(const uint8_t* rle, uint32_t rleLen) {
   }
 }
 
+bool drawImageRaw(const uint8_t* data, size_t len) {
+  if (!g_fb || !data || len != FB_BYTES) return false;
+  memcpy(g_fb, data, FB_BYTES);
+  return true;
+}
+
+uint32_t frameBytes() { return FB_BYTES; }
+
 void drawText(int x, int y, const char* s, uint8_t color, uint8_t scale) {
   if (scale < 1) scale = 1;
   int cx = x;

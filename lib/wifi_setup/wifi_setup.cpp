@@ -13,7 +13,7 @@ namespace wifi_setup {
 
 namespace {
 
-// 设备热点名（用户指定）；IP 与配网二维码内容一致
+// 设备热点名；IP 与配网二维码内容一致
 constexpr const char* kApSsid = "DayIJoy-心选日";
 const IPAddress kApIp(192, 168, 8, 1);
 const IPAddress kApMask(255, 255, 255, 0);
@@ -22,21 +22,31 @@ constexpr byte kDnsPort = 53;
 constexpr uint8_t kApChannel = 6;
 constexpr uint8_t kApMaxConn = 4;
 constexpr uint32_t kScanCacheMs = 30000;
+constexpr uint32_t kConnectTimeoutMs = 20000;
 
 // NVS：命名空间与键沿用硬件方案 5.1
 constexpr const char* kNvsNamespace = "jnr";
 constexpr const char* kNvsSsid = "wifiSsid";
 constexpr const char* kNvsPass = "wifiPass";
+constexpr const char* kNvsApiBase = "apiBase";
+constexpr const char* kNvsApiBaseBak = "apiBaseBak";
+constexpr const char* kNvsSyncHour = "syncHour";
+constexpr const char* kNvsStaIp = "staIp";
+constexpr const char* kNvsStaGw = "staGw";
+constexpr const char* kNvsStaMask = "staMask";
+constexpr const char* kNvsStaDns = "staDns";
+constexpr uint8_t kDefaultSyncHour = 0;
 
 WebServer server(80);
 DNSServer dns;
-Preferences prefs;
 
 String g_scanJson;
 uint32_t g_scanTs = 0;
 bool g_apReady = false;
+bool g_httpReady = false;
+bool g_dnsOn = false;
 
-// 配网页（单页 HTML，内嵌 PROGMEM，断网也能打开）——沿用示例配网页风格
+// ---------- HTML：配网页 ----------
 const char kIndexHtml[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -56,6 +66,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   input:focus{border-color:#3b82f6}
   button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
   button:active{background:#2563eb}
+  button:disabled{opacity:.6}
   button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6;margin-top:8px}
   .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
   .list{max-height:240px;overflow-y:auto;border:1px solid #eef0f4;border-radius:8px;margin-top:8px}
@@ -72,7 +83,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <body>
 <div class="wrap">
   <h1>设备配网</h1>
-  <div class="sub">选择 WiFi 并输入密码，提交后设备会自动连接</div>
+  <div class="sub">选择 WiFi 并输入密码，连接成功后进入设备信息页</div>
   <div class="card">
     <div class="row"><label style="margin:0">附近的 WiFi</label><button class="ghost" id="btnScan" style="margin:0;width:auto;padding:8px 14px">刷新</button></div>
     <div class="list" id="list"><div class="item">点击「刷新」扫描附近 WiFi</div></div>
@@ -109,11 +120,14 @@ async function scan(){
 async function save(){
   const ssid=$('ssid').value.trim();
   if(!ssid){tip.textContent='请输入或选择 WiFi 名称';tip.className='tip err';return;}
-  tip.textContent='正在保存并连接，请稍候...';tip.className='tip';$('btnSave').disabled=true;
+  tip.textContent='正在连接路由器，请稍候（约 20 秒）...';tip.className='tip';$('btnSave').disabled=true;
   try{
     const fd=new FormData();fd.append('ssid',ssid);fd.append('pass',$('pass').value);
-    const t=await(await fetch('/save',{method:'POST',body:fd})).text();
-    tip.textContent=t||'已提交，设备即将重启...';tip.className='tip ok';
+    const r=await fetch('/save',{method:'POST',body:fd});
+    const t=await r.text();
+    if(!r.ok){tip.textContent=t||'连接失败';tip.className='tip err';$('btnSave').disabled=false;return;}
+    tip.textContent=t||'连接成功，正在跳转...';tip.className='tip ok';
+    setTimeout(()=>{location.href='/device';},600);
   }catch(e){tip.textContent='提交失败：'+e;tip.className='tip err';$('btnSave').disabled=false;}
 }
 async function reset(){
@@ -127,9 +141,195 @@ $('btnScan').onclick=scan;$('btnSave').onclick=save;$('btnReset').onclick=reset;
 </html>
 )HTML";
 
+// ---------- HTML：设备信息 / 服务地址 ----------
+const char kDeviceHtml[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备信息</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f6fa;color:#222}
+  .wrap{max-width:480px;margin:0 auto;padding:24px 18px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#888;font-size:13px;margin-bottom:18px}
+  .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #f0f2f6;font-size:14px}
+  .row:last-child{border-bottom:0}
+  .k{color:#888;flex-shrink:0}
+  .v{word-break:break-all;text-align:right}
+  label{font-size:13px;color:#555;display:block;margin-bottom:6px}
+  input,select{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:14px;outline:none;background:#fff}
+  input:focus,select:focus{border-color:#3b82f6}
+  button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
+  button:active{background:#2563eb}
+  button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
+  button.ok{background:#16a34a}
+  .tip{font-size:12px;color:#888;margin-top:8px}
+  .ok{color:#16a34a}
+  .err{color:#dc2626}
+  .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>设备信息</h1>
+  <div class="sub">查看本机网络信息，并设置小程序服务地址</div>
+  <div class="card" id="info">
+    <div class="row"><span class="k">状态</span><span class="v">加载中...</span></div>
+  </div>
+  <div class="card">
+    <label>主服务地址（API 根）</label>
+    <input id="apiBase" autocomplete="off" placeholder="https://host:port/api">
+    <label style="margin-top:12px">备用服务地址（可选）</label>
+    <input id="apiBaseBak" autocomplete="off" placeholder="留空表示不启用备用">
+    <label style="margin-top:12px">每日自动同步时间</label>
+    <select id="syncHour"></select>
+    <div class="tip">接口路径写死在固件；此处只配域名/端口等前缀。主地址留空用默认值。请求时先试主，失败再试备，下次仍先主。同步时间为本地整点，每天只自动拉取一次（拉图逻辑后续实现）。</div>
+    <button id="btnSave">保存设置</button>
+    <button class="ok" id="btnFinish">完成并重启</button>
+    <div class="tip" id="tip"></div>
+  </div>
+  <div class="footer">DayIJoy · 心选日 · 局域网管理</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const tip=$('tip');
+(function(){
+  const sel=$('syncHour');
+  for(let h=0;h<24;h++){
+    const o=document.createElement('option');
+    o.value=String(h);
+    o.textContent=String(h).padStart(2,'0')+':00';
+    sel.appendChild(o);
+  }
+})();
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function apiForm(){
+  const fd=new FormData();
+  fd.append('apiBase',$('apiBase').value.trim());
+  fd.append('apiBaseBak',$('apiBaseBak').value.trim());
+  fd.append('syncHour',$('syncHour').value);
+  return fd;
+}
+async function load(){
+  try{
+    const j=await(await fetch('/info')).json();
+    const hour=(j.syncHour==null?0:Number(j.syncHour));
+    const rows=[
+      ['WiFi',j.ssid||'-'],
+      ['局域网 IP',j.ip||'-'],
+      ['网关',j.gateway||'-'],
+      ['子网掩码',j.mask||'-'],
+      ['MAC',j.mac||'-'],
+      ['管理页',j.adminUrl||'-'],
+      ['主服务地址',j.apiBase||'-'],
+      ['备用服务地址',j.apiBaseBak||'(未设置)'],
+      ['每日同步',String(hour).padStart(2,'0')+':00'],
+    ];
+    $('info').innerHTML=rows.map(([k,v])=>`<div class="row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('');
+    $('apiBase').value=j.apiBase||'';
+    $('apiBaseBak').value=j.apiBaseBak||'';
+    $('syncHour').value=String(hour);
+  }catch(e){
+    $('info').innerHTML='<div class="row"><span class="k">错误</span><span class="v err">加载失败</span></div>';
+  }
+}
+async function saveApi(){
+  tip.textContent='保存中...';tip.className='tip';
+  try{
+    const t=await(await fetch('/api-base',{method:'POST',body:apiForm()})).text();
+    tip.textContent=t||'已保存';tip.className='tip ok';
+    load();
+  }catch(e){tip.textContent='保存失败：'+e;tip.className='tip err';}
+}
+async function finish(){
+  tip.textContent='正在保存并重启...';tip.className='tip';
+  try{
+    await fetch('/api-base',{method:'POST',body:apiForm()});
+    await fetch('/finish',{method:'POST'});
+    tip.textContent='设备即将重启，请改连家里 WiFi 后用局域网 IP 访问管理页';tip.className='tip ok';
+  }catch(e){tip.textContent='操作失败：'+e;tip.className='tip err';}
+}
+$('btnSave').onclick=saveApi;$('btnFinish').onclick=finish;
+load();
+</script>
+</body>
+</html>
+)HTML";
+
+String normalizeApiBase(String v, bool useDefaultIfEmpty) {
+  v.trim();
+  while (v.length() > 8 && v.endsWith("/")) v.remove(v.length() - 1);
+  if (v.isEmpty() && useDefaultIfEmpty) v = kDefaultApiBase;
+  return v;
+}
+
+String readApiBaseFromNvs() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  String v = p.getString(kNvsApiBase, "");
+  p.end();
+  return normalizeApiBase(v, true);
+}
+
+String readApiBaseBakFromNvs() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  String v = p.getString(kNvsApiBaseBak, "");
+  p.end();
+  return normalizeApiBase(v, false);
+}
+
+uint8_t readSyncHourFromNvs() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  uint8_t h = p.getUChar(kNvsSyncHour, kDefaultSyncHour);
+  p.end();
+  return (h <= 23) ? h : kDefaultSyncHour;
+}
+
+// 校验并规范化用户输入；ok=false 时 err 为原因。空串表示清除该项。
+bool parseApiBaseArg(const String& raw, String& out, String& err) {
+  out = raw;
+  out.trim();
+  if (out.isEmpty()) return true;
+  while (out.endsWith("/")) out.remove(out.length() - 1);
+  if (!out.startsWith("http://") && !out.startsWith("https://")) {
+    err = "地址须以 http:// 或 https:// 开头";
+    return false;
+  }
+  return true;
+}
+
+// syncHour 须为 0–23 整点；非法则 err。
+bool parseSyncHourArg(const String& raw, uint8_t& out, String& err) {
+  if (raw.length() == 0) {
+    err = "请选择每日同步时间";
+    return false;
+  }
+  int v = raw.toInt();
+  if (v < 0 || v > 23) {
+    err = "同步时间须为 0–23 整点";
+    return false;
+  }
+  // "09abc" 这类 toInt 会得到 9，再核对整串是否纯数字
+  for (size_t i = 0; i < raw.length(); ++i) {
+    if (raw[i] < '0' || raw[i] > '9') {
+      err = "同步时间须为 0–23 整点";
+      return false;
+    }
+  }
+  out = static_cast<uint8_t>(v);
+  return true;
+}
+
 void handleRoot() { server.send_P(200, "text/html; charset=utf-8", kIndexHtml); }
 
-// Captive Portal 探测 URL：让 iOS / Android 自动弹出配网页
+void handleDevicePage() { server.send_P(200, "text/html; charset=utf-8", kDeviceHtml); }
+
 void handleCaptiveOk() {
   server.sendHeader("Cache-Control", "no-cache");
   server.send(204, "text/plain", "");
@@ -143,7 +343,6 @@ void handleCaptivePortal() {
 void refreshScanCache(bool force = false) {
   if (!force && g_scanJson.length() > 0 && (millis() - g_scanTs) < kScanCacheMs) return;
 
-  // 扫描需要 AP+STA；纯 AP 模式下 scanNetworks 会导致热点掉线/搜不到
   WiFi.mode(WIFI_AP_STA);
   int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/false);
   String json = "[";
@@ -167,6 +366,38 @@ void handleScan() {
   server.send(200, "application/json", g_scanJson);
 }
 
+bool tryConnectSta(const String& ssid, const String& pass, bool preferStatic) {
+  if (preferStatic) applySavedStaticIp();
+
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  uint32_t start = millis();
+  while (millis() - start < kConnectTimeoutMs) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    delay(200);
+    yield();
+  }
+
+  // 静态 IP 失败时回退 DHCP 再试一次
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  bool hadStatic = preferStatic && p.getString(kNvsStaIp, "").length() > 0;
+  p.end();
+  if (hadStatic) {
+    Serial.println("[wifi_setup] 静态 IP 连接失败，回退 DHCP");
+    WiFi.disconnect(false, false);
+    delay(200);
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    start = millis();
+    while (millis() - start < kConnectTimeoutMs) {
+      if (WiFi.status() == WL_CONNECTED) return true;
+      delay(200);
+      yield();
+    }
+  }
+  return false;
+}
+
 void handleSave() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
@@ -174,25 +405,135 @@ void handleSave() {
     server.send(400, "text/plain; charset=utf-8", "SSID 不能为空");
     return;
   }
-  prefs.putString(kNvsSsid, ssid);
-  prefs.putString(kNvsPass, pass);
+
+  {
+    Preferences p;
+    p.begin(kNvsNamespace, false);
+    p.putString(kNvsSsid, ssid);
+    p.putString(kNvsPass, pass);
+    p.end();
+  }
+  Serial.printf("[wifi_setup] 已保存 SSID=%s，尝试 STA 连接（保持 AP）\n", ssid.c_str());
+
+  // 保持 AP，切 AP+STA 连路由器
+  WiFi.mode(WIFI_AP_STA);
+  if (!tryConnectSta(ssid, pass, /*preferStatic=*/true)) {
+    server.send(500, "text/plain; charset=utf-8",
+                "无法连接该 WiFi，请检查名称/密码后重试");
+    Serial.println("[wifi_setup] STA 连接失败");
+    return;
+  }
+
+  saveCurrentStaIp();
+  Serial.printf("[wifi_setup] STA 已连接 IP=%s\n", WiFi.localIP().toString().c_str());
+  // 先回包再刷屏（全刷 12–20s，否则浏览器会超时）
   server.send(200, "text/plain; charset=utf-8",
-              "已保存：" + ssid + "，设备即将重启并尝试连接...");
-  Serial.printf("[wifi_setup] 已保存 SSID=%s，1.5s 后重启\n", ssid.c_str());
-  delay(1500);
-  ESP.restart();
+              "已连接：" + ssid + "，IP=" + WiFi.localIP().toString());
+  showReadyScreen();
 }
 
 void handleReset() {
-  prefs.remove(kNvsSsid);
-  prefs.remove(kNvsPass);
-  server.send(200, "text/plain; charset=utf-8", "已清空配置，设备即将重启...");
+  Preferences p;
+  p.begin(kNvsNamespace, false);
+  p.remove(kNvsSsid);
+  p.remove(kNvsPass);
+  p.end();
+  // 保留 apiBase / syncHour / 静态 IP，避免重配 WiFi 时丢服务地址与同步时间；出厂重置另议
+  server.send(200, "text/plain; charset=utf-8", "已清空 WiFi，设备即将重启...");
   delay(1000);
   ESP.restart();
 }
 
+String jsonEscape(const String& s) {
+  String o;
+  o.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    if (c == '\\' || c == '"') {
+      o += '\\';
+      o += c;
+    } else if (c == '\n') {
+      o += "\\n";
+    } else {
+      o += c;
+    }
+  }
+  return o;
+}
+
+void handleInfo() {
+  String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("-");
+  String admin = (ip == "-") ? String("-") : ("http://" + ip + "/device");
+  String json = "{";
+  json += "\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\",";
+  json += "\"ip\":\"" + jsonEscape(ip) + "\",";
+  json += "\"gateway\":\"" + jsonEscape(WiFi.gatewayIP().toString()) + "\",";
+  json += "\"mask\":\"" + jsonEscape(WiFi.subnetMask().toString()) + "\",";
+  json += "\"mac\":\"" + jsonEscape(WiFi.macAddress()) + "\",";
+  json += "\"adminUrl\":\"" + jsonEscape(admin) + "\",";
+  json += "\"apiBase\":\"" + jsonEscape(readApiBaseFromNvs()) + "\",";
+  json += "\"apiBaseBak\":\"" + jsonEscape(readApiBaseBakFromNvs()) + "\",";
+  json += "\"syncHour\":" + String(readSyncHourFromNvs());
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleApiBase() {
+  String primary, backup, err;
+  uint8_t hour = kDefaultSyncHour;
+  if (!parseApiBaseArg(server.arg("apiBase"), primary, err) ||
+      !parseApiBaseArg(server.arg("apiBaseBak"), backup, err) ||
+      !parseSyncHourArg(server.arg("syncHour"), hour, err)) {
+    server.send(400, "text/plain; charset=utf-8", err);
+    return;
+  }
+
+  {
+    Preferences p;
+    p.begin(kNvsNamespace, false);
+    if (primary.isEmpty()) {
+      p.remove(kNvsApiBase);
+    } else {
+      p.putString(kNvsApiBase, primary);
+    }
+    if (backup.isEmpty()) {
+      p.remove(kNvsApiBaseBak);
+    } else {
+      p.putString(kNvsApiBaseBak, backup);
+    }
+    p.putUChar(kNvsSyncHour, hour);
+    p.end();
+  }
+
+  char hourLabel[8];
+  snprintf(hourLabel, sizeof(hourLabel), "%02u:00", hour);
+  String msg = String("主：") + (primary.isEmpty() ? kDefaultApiBase : primary.c_str());
+  msg += "；备：";
+  msg += backup.isEmpty() ? "(未设置)" : backup;
+  msg += "；同步：";
+  msg += hourLabel;
+  server.send(200, "text/plain; charset=utf-8", msg);
+  Serial.printf("[wifi_setup] apiBase=%s apiBaseBak=%s syncHour=%u\n",
+                primary.isEmpty() ? kDefaultApiBase : primary.c_str(),
+                backup.isEmpty() ? "(none)" : backup.c_str(), hour);
+}
+
+void handleFinish() {
+  if (WiFi.status() == WL_CONNECTED) saveCurrentStaIp();
+  server.send(200, "text/plain; charset=utf-8", "即将重启...");
+  Serial.println("[wifi_setup] 用户完成配置，重启");
+  delay(800);
+  ESP.restart();
+}
+
 void handleNotFound() {
-  handleCaptivePortal();
+  if (g_apReady) {
+    handleCaptivePortal();
+    return;
+  }
+  // STA 管理页：未知路径转到 /device
+  server.sendHeader("Location", "/device", true);
+  server.send(302, "text/plain", "");
 }
 
 void setupApRadio() {
@@ -201,7 +542,6 @@ void setupApRadio() {
   esp_wifi_set_ps(WIFI_PS_NONE);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  // AP+STA：热点常开的同时允许扫描附近路由器（配网页 /scan 依赖此模式）
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(kApIp, kApGw, kApMask);
   if (!WiFi.softAP(kApSsid, nullptr, kApChannel, /*ssid_hidden=*/0, kApMaxConn)) {
@@ -215,15 +555,24 @@ void setupApRadio() {
                 kApSsid, WiFi.softAPIP().toString().c_str(), kApChannel);
 }
 
-void setupHttp() {
+void registerCommonRoutes() {
+  server.on("/device", HTTP_GET, handleDevicePage);
+  server.on("/info", HTTP_GET, handleInfo);
+  server.on("/api-base", HTTP_POST, handleApiBase);
+  server.on("/finish", HTTP_POST, handleFinish);
+}
+
+void setupHttpAp() {
   dns.setErrorReplyCode(DNSReplyCode::NoError);
   dns.start(kDnsPort, "*", kApIp);
+  g_dnsOn = true;
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/reset", HTTP_POST, handleReset);
-  // iOS / Android / Windows Captive Portal 探测
+  registerCommonRoutes();
+  // Captive Portal 探测
   server.on("/generate_204", HTTP_GET, handleCaptiveOk);
   server.on("/gen_204", HTTP_GET, handleCaptiveOk);
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
@@ -232,6 +581,20 @@ void setupHttp() {
   server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);
   server.onNotFound(handleNotFound);
   server.begin();
+  g_httpReady = true;
+}
+
+void setupHttpSta() {
+  registerCommonRoutes();
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Location", "/device", true);
+    server.send(302, "text/plain", "");
+  });
+  server.onNotFound(handleNotFound);
+  server.begin();
+  g_httpReady = true;
+  Serial.printf("[wifi_setup] STA 管理页 http://%s/device\n",
+                WiFi.localIP().toString().c_str());
 }
 
 }  // namespace
@@ -240,28 +603,121 @@ void showConfigScreen() {
   epd::clear(epd::WHITE);
   epd::drawImageRle(kCfgScreenRle, kCfgScreenRleLen);
 
-  // 运行时把本机真实 MAC 画到设计稿预留位置
-  String mac = WiFi.macAddress();  // 形如 AA:BB:CC:DD:EE:FF
+  String mac = WiFi.macAddress();
   epd::drawText(CFG_MAC_X, CFG_MAC_Y, mac.c_str(), CFG_MAC_COLOR, CFG_MAC_SCALE);
 
   Serial.printf("[wifi_setup] 刷出配网画面 MAC=%s\n", mac.c_str());
   if (!epd::flush()) Serial.println("[wifi_setup] 刷屏超时");
 }
 
+void showReadyScreen() {
+  epd::clear(epd::WHITE);
+
+  const char* title = "DayIJoy Ready";
+  String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("--");
+  String mac = WiFi.macAddress();
+  String url = "http://" + ip + "/device";
+
+  // 竖屏简单排版（当前字库仅 ASCII）
+  epd::drawText(40, 80, title, epd::BLACK, 2);
+  epd::drawText(40, 160, "LAN IP:", epd::BLACK, 2);
+  epd::drawText(40, 200, ip.c_str(), epd::BLACK, 2);
+  epd::drawText(40, 280, "MAC:", epd::BLACK, 2);
+  epd::drawText(40, 320, mac.c_str(), epd::BLACK, 2);
+  epd::drawText(40, 400, "Open browser:", epd::BLACK, 2);
+  epd::drawText(40, 440, url.c_str(), epd::BLACK, 1);
+  epd::drawText(40, 520, "Set API base,", epd::BLACK, 2);
+  epd::drawText(40, 560, "then Finish.", epd::BLACK, 2);
+
+  Serial.printf("[wifi_setup] 就绪画面 IP=%s\n", ip.c_str());
+  if (!epd::flush()) Serial.println("[wifi_setup] 刷屏超时");
+}
+
+void applySavedStaticIp() {
+  Preferences p;
+  if (!p.begin(kNvsNamespace, true)) return;
+  String ipS = p.getString(kNvsStaIp, "");
+  if (ipS.isEmpty()) {
+    p.end();
+    return;
+  }
+
+  IPAddress ip, gw, mask, dns1;
+  if (!ip.fromString(ipS)) {
+    p.end();
+    return;
+  }
+  gw.fromString(p.getString(kNvsStaGw, ""));
+  if (!mask.fromString(p.getString(kNvsStaMask, "255.255.255.0"))) {
+    mask = IPAddress(255, 255, 255, 0);
+  }
+  if (!dns1.fromString(p.getString(kNvsStaDns, ""))) dns1 = gw;
+  p.end();
+
+  if (!WiFi.config(ip, gw, mask, dns1)) {
+    Serial.println("[wifi_setup] WiFi.config 静态 IP 失败");
+    return;
+  }
+  Serial.printf("[wifi_setup] 使用固定 IP %s gw=%s\n",
+                ip.toString().c_str(), gw.toString().c_str());
+}
+
+void saveCurrentStaIp() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  // 全局 prefs 可能尚未 begin（例如 main 里刚连上），统一用临时写入
+  Preferences p;
+  if (!p.begin(kNvsNamespace, false)) return;
+  p.putString(kNvsStaIp, WiFi.localIP().toString());
+  p.putString(kNvsStaGw, WiFi.gatewayIP().toString());
+  p.putString(kNvsStaMask, WiFi.subnetMask().toString());
+  p.putString(kNvsStaDns, WiFi.dnsIP().toString());
+  p.end();
+  Serial.printf("[wifi_setup] 已记住局域网 IP=%s\n", WiFi.localIP().toString().c_str());
+}
+
+String apiBase() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  String v = p.getString(kNvsApiBase, "");
+  p.end();
+  return normalizeApiBase(v, true);
+}
+
+String apiBaseBackup() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  String v = p.getString(kNvsApiBaseBak, "");
+  p.end();
+  return normalizeApiBase(v, false);
+}
+
+uint8_t syncHour() {
+  Preferences p;
+  p.begin(kNvsNamespace, true);
+  uint8_t h = p.getUChar(kNvsSyncHour, kDefaultSyncHour);
+  p.end();
+  return (h <= 23) ? h : kDefaultSyncHour;
+}
+
 void startAP() {
-  prefs.begin(kNvsNamespace, false);
-
-  // 先启动热点与 HTTP，再刷屏（刷屏阻塞 12-20s，期间手机应能搜到并连上 AP）
   setupApRadio();
-  setupHttp();
-
+  setupHttpAp();
   showConfigScreen();
 }
 
+void startLocalAdmin() {
+  g_apReady = false;
+  g_dnsOn = false;
+  WiFi.setSleep(false);
+  setupHttpSta();
+}
+
 void loop() {
-  if (!g_apReady) return;
-  dns.processNextRequest();
+  if (!g_httpReady) return;
+  if (g_dnsOn) dns.processNextRequest();
   server.handleClient();
 }
+
+bool httpActive() { return g_httpReady; }
 
 }  // namespace wifi_setup

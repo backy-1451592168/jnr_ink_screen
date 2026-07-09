@@ -9,7 +9,7 @@
 
 """生成墨屏「设备配网」画面资源。
 
-布局参考 docs/UI设计稿/单片机/ai_studio_code.html（400×800 等比放大到 480×800）。
+布局参考 docs/UI设计稿/单片机/ai_studio_code.html（480×800 等比放大到 480×800）。
 字体：SimSun 宋体（FONT_CANDIDATES 首位），全页统一字重，用颜色区分层级。
 渲染：1-bit 位图绘制（无抗锯齿）→ 480×800 原生像素 → 六色最近邻量化
 
@@ -34,11 +34,8 @@ ICON_MAC = os.path.join(ICON_DIR, "路由器.png")
 W, H = 480, 800
 # 细体黑体：笔画粗细均匀（与 ai_studio_code.html 系统 UI 字重接近）
 FONT_CANDIDATES = [
-    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/点阵/ark-pixel-12px-monospaced-zh_cn.ttf", 0),
-    # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/点阵/ark-pixel-inherited-12px-monospaced.ttf", 0),
     # ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/仿宋_GB2312/仿宋_GB2312.ttf", 0),
     ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/windows XP 宋体/simsun.ttc", 0),
-    ("/Users/sujunhao/project/私人项目/纪念日小程序全盏/docs/字体库/SanJiSongHeiTi-Xi/SanJiSongHeiTi-Xi-2.ttf", 0),
     ("/System/Library/Fonts/STHeiti Light.ttc", 0),
     ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
 ]
@@ -79,7 +76,6 @@ PALETTE_RGB = [
 ]
 PALETTE_IDX = [BLACK, WHITE, YELLOW, RED, BLUE, GREEN]
 
-# 480 = 400 × 1.2；参照 ai_studio_code.html
 LY = {
     "M": 26,
     "hdr_main_y": 10,

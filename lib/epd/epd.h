@@ -37,6 +37,12 @@ void drawPixel(int x, int y, uint8_t color);
 // 把 RLE (count,value) 点阵还原进帧缓冲；数据须为 480x800、4bit 打包（240B/行）
 void drawImageRle(const uint8_t* rle, uint32_t rleLen);
 
+// 写入原始 4bit 打包帧（须恰好 frameBytes()=192000，与 Node packE6 同序）
+bool drawImageRaw(const uint8_t* data, size_t len);
+
+// 整帧字节数（竖屏 480×800 六色 = 192000）
+uint32_t frameBytes();
+
 // 用 8x16 ASCII 字体绘制字符串（scale 为整数放大倍数）
 void drawText(int x, int y, const char* s, uint8_t color, uint8_t scale = 1);
 
