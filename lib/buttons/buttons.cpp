@@ -17,8 +17,13 @@ namespace {
 constexpr uint32_t kDebounceMs = 50;
 constexpr uint32_t kShortMaxMs = 800;
 constexpr uint32_t kLongMs = 800;
+constexpr uint32_t kDoubleClickMs = 400;  // 两次短按间隔上限
 constexpr uint32_t kReconfigMs = 3000;
 constexpr uint32_t kFactoryMs = 8000;
+
+// 执行键：短按后等窗口，超时报单击，窗口内再短按报双击
+bool g_actionClickPending = false;
+uint32_t g_actionClickAt = 0;
 
 struct Btn {
   uint8_t pin;
@@ -100,8 +105,9 @@ Event poll(bool busy) {
     return Event::ModeShort;
   }
 
-  // 忙时：按下执行键即取消（边沿）
+  // 忙时：按下执行键即取消（边沿）；丢弃未决单击
   if (busy) {
+    g_actionClickPending = false;
     bool raw = digitalRead(g_action.pin) == LOW;
     uint32_t now = millis();
     if (raw != g_action.lastRaw) {
@@ -120,7 +126,23 @@ Event poll(bool busy) {
 
   uint32_t actHeld = updateRelease(g_action);
   if (actHeld > 0) {
-    if (actHeld >= kLongMs) return Event::ActionLong;
+    if (actHeld >= kLongMs) {
+      g_actionClickPending = false;
+      return Event::ActionLong;
+    }
+    // 短按：窗口内第二次 → 双击；否则挂起等超时再报单击
+    uint32_t now = millis();
+    if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
+      g_actionClickPending = false;
+      return Event::ActionDouble;
+    }
+    g_actionClickPending = true;
+    g_actionClickAt = now;
+    return Event::None;
+  }
+
+  if (g_actionClickPending && (millis() - g_actionClickAt) > kDoubleClickMs) {
+    g_actionClickPending = false;
     return Event::ActionShort;
   }
 

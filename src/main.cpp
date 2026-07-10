@@ -173,11 +173,15 @@ static void handleButtons() {
       break;
 
     case buttons::Event::ActionShort:
+      // 单击：仅未绑定立即 sync；已绑定不重刷（防误触，改双击）
       if (g_provisioning) break;
-      if (unbound) {
-        runSyncWithLed();
-      } else if (frame_store::workMode() == frame_store::MODE_MINIPROG ||
-                 frame_store::workMode() == frame_store::MODE_LAN) {
+      if (unbound) runSyncWithLed();
+      break;
+
+    case buttons::Event::ActionDouble:
+      if (g_provisioning || unbound) break;
+      if (frame_store::workMode() == frame_store::MODE_MINIPROG ||
+          frame_store::workMode() == frame_store::MODE_LAN) {
         ledFlashModeFast(true);
         auto r = ink_sync::refreshLocal();
         if (r == ink_sync::Result::OkUpdated) {
