@@ -52,4 +52,8 @@ void panelInit();
 // 把帧缓冲旋转 90° 刷到面板并下电。返回 false 表示 BUSY 超时。
 bool flush();
 
+// BUSY 等待 / 写显存循环中周期性回调（紫灯呼吸）；传 nullptr 清除
+using BusyPollHook = void (*)();
+void setBusyPollHook(BusyPollHook fn);
+
 }  // namespace epd

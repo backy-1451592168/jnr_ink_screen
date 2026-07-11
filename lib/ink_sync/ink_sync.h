@@ -17,10 +17,14 @@ void requestCancel();
 void clearCancel();
 bool isBusy();
 
+// 下载/防抖期间周期性回调（主程序用于紫灯呼吸）；传 nullptr 清除
+using ActivityHook = void (*)();
+void setActivityHook(ActivityHook fn);
+
 // 执行一次完整 sync（主 apiBase，失败再备）
 Result runOnce();
 
-// 用本地 /last.bin 重刷（受最小刷屏间隔约束）
-Result refreshLocal();
+// 用本地 /last.bin 重刷；force=true 时忽略最小刷屏间隔（开机恢复用）
+Result refreshLocal(bool force = false);
 
 }  // namespace ink_sync

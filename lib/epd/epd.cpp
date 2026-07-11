@@ -67,10 +67,13 @@ void dataBulk(const uint8_t* buf, size_t len) {
   digitalWrite(PIN_EPD_CS, HIGH);
 }
 
+BusyPollHook g_busyPollHook = nullptr;
+
 bool waitIdle(uint32_t timeoutMs = 30000) {
   uint32_t start = millis();
   while (digitalRead(PIN_EPD_BUSY) == LOW) {
     if (millis() - start > timeoutMs) return false;
+    if (g_busyPollHook) g_busyPollHook();
     delay(1);
   }
   return true;
@@ -197,6 +200,7 @@ bool flush() {
   cmd(0x10);  // DTM 进入写显存
   // 竖屏(u,v) 转置到面板横屏：u=y2(0..479), v=x2(0..799)
   for (int y2 = 0; y2 < PANEL_H; ++y2) {
+    if (g_busyPollHook && (y2 & 15) == 0) g_busyPollHook();
     int pu = EPD_FLIP_V ? (W - 1 - y2) : y2;
     for (int x2 = 0; x2 < PANEL_W; x2 += 2) {
       int v0 = EPD_MIRROR_H ? (H - 1 - x2) : x2;
@@ -224,6 +228,10 @@ bool flush() {
 
   SPI.endTransaction();
   return ok;
+}
+
+void setBusyPollHook(BusyPollHook fn) {
+  g_busyPollHook = fn;
 }
 
 }  // namespace epd

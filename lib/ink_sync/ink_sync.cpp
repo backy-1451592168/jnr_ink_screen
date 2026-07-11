@@ -22,6 +22,11 @@ namespace {
 
 volatile bool g_cancel = false;
 bool g_busy = false;
+ActivityHook g_activityHook = nullptr;
+
+void tickActivity() {
+  if (g_activityHook) g_activityHook();
+}
 
 // 与 Node zlib.crc32 一致：初值/终值均异或 0xFFFFFFFF
 uint32_t crc32Buf(const uint8_t* data, size_t len) {
@@ -129,6 +134,7 @@ bool httpGetBinary(const String& url, uint8_t* dest, size_t maxLen, size_t& got)
         http.end();
         return false;
       }
+      tickActivity();
       size_t avail = stream->available();
       if (!avail) {
         delay(1);
@@ -155,6 +161,7 @@ bool httpGetBinary(const String& url, uint8_t* dest, size_t maxLen, size_t& got)
       http.end();
       return false;
     }
+    tickActivity();
     size_t avail = stream->available();
     if (!avail) {
       delay(1);
@@ -212,16 +219,10 @@ void markRefreshed() {
   frame_store::setLastRefreshTs(now);
 }
 
-// 远程 sync 下发的新帧：只做防抖，不受最小间隔限制（避免丢更新）
+// 远程 sync 下发的新帧：拉取模型每次只有一帧，无需内容防抖窗口（避免下完空等再刷）
 bool applyFrame(const uint8_t* buf, size_t len, uint32_t crc, uint32_t version, bool isBound) {
-  if (EPD_DEBOUNCE_MS > 0) {
-    uint32_t start = millis();
-    while (millis() - start < (uint32_t)EPD_DEBOUNCE_MS) {
-      if (g_cancel) return false;
-      delay(20);
-    }
-  }
   if (!epd::drawImageRaw(buf, len)) return false;
+  tickActivity();
   if (!epd::flush()) return false;
   frame_store::saveLastFrame(buf, len, crc);
   frame_store::setContentVersion(version);
@@ -266,8 +267,13 @@ Result syncAgainstBase(const String& base) {
 
   if (type == "sync_ok") {
     bool bound = jsonBoolTrue(body, "bound") || body.indexOf("\"bound\":true") >= 0;
-    frame_store::setBound(bound);
     int64_t cv = jsonNum(body, "contentVersion");
+    // 云端已绑但尚无纪念日新帧（本地仍是绑定页 version=1）：不置 bound，继续 60s 轮询
+    if (bound && frame_store::contentVersion() <= 1) {
+      Serial.println("[ink_sync] sync_ok 已绑定但无纪念日画面，继续等待");
+      return Result::OkNoUpdate;
+    }
+    frame_store::setBound(bound);
     if (cv > 0) frame_store::setContentVersion((uint32_t)cv);
     Serial.println("[ink_sync] sync_ok");
     return Result::OkNoUpdate;
@@ -284,6 +290,16 @@ Result syncAgainstBase(const String& base) {
   String frameCrcHex = jsonStr(body, "frameCrc");
   String downloadUrl = jsonStr(body, "downloadUrl");
 
+  // 未绑定轮询：屏上已是同一绑定页则只确认状态，不下载不刷屏
+  if (type == "bind_qr") {
+    uint32_t expectCrc = parseCrcHex(frameCrcHex);
+    if (!frame_store::bound() && frame_store::hasValidLastFrame() &&
+        expectCrc != 0 && frame_store::frameCrc() == expectCrc) {
+      Serial.println("[ink_sync] bind_qr 已显示，跳过刷屏");
+      return Result::OkNoUpdate;
+    }
+  }
+
   if (frameSize <= 0 || chunkCount <= 0 || downloadUrl.isEmpty()) {
     Serial.println("[ink_sync] 帧元信息缺失");
     return Result::Failed;
@@ -293,6 +309,8 @@ Result syncAgainstBase(const String& base) {
                   epd::frameBytes(), (long long)frameSize);
     return Result::Failed;
   }
+
+  tickActivity();  // 开始下载：紫灯呼吸
 
   uint8_t* buf = (uint8_t*)ps_malloc((size_t)frameSize);
   if (!buf) buf = (uint8_t*)malloc((size_t)frameSize);
@@ -307,6 +325,7 @@ Result syncAgainstBase(const String& base) {
       free(buf);
       return Result::Cancelled;
     }
+    tickActivity();
     String u = chunkUrl(downloadUrl, i);
     size_t got = 0;
     size_t remain = (size_t)frameSize - offset;
@@ -353,6 +372,8 @@ void requestCancel() { g_cancel = true; }
 void clearCancel() { g_cancel = false; }
 bool isBusy() { return g_busy; }
 
+void setActivityHook(ActivityHook fn) { g_activityHook = fn; }
+
 Result runOnce() {
   if (g_busy) return Result::Failed;
   g_busy = true;
@@ -373,10 +394,10 @@ Result runOnce() {
   return r;
 }
 
-Result refreshLocal() {
+Result refreshLocal(bool force) {
   if (g_busy) return Result::Failed;
   if (!frame_store::hasValidLastFrame()) return Result::Failed;
-  if (!canRefreshNow()) return Result::Failed;
+  if (!force && !canRefreshNow()) return Result::Failed;
 
   g_busy = true;
   clearCancel();
@@ -394,6 +415,7 @@ Result refreshLocal() {
     return Result::Failed;
   }
   if (EPD_DEBOUNCE_MS > 0) delay(50);  // 本地重刷不做长防抖
+  tickActivity();
   bool ok = epd::drawImageRaw(buf, len) && epd::flush();
   free(buf);
   if (ok) markRefreshed();

@@ -60,6 +60,29 @@ static void ledFlashModeFast(bool on) {
   }
 }
 
+// 下载/刷屏期间紫色呼吸（约 1.5s 周期）
+static void ledPurpleBreatheTick() {
+  const uint32_t period = 1500;
+  uint32_t phase = millis() % period;
+  uint8_t bri;
+  if (phase < period / 2) {
+    bri = (uint8_t)(8 + (phase * 72) / (period / 2));
+  } else {
+    bri = (uint8_t)(80 - ((phase - period / 2) * 72) / (period / 2));
+  }
+  led(bri, 0, bri);
+}
+
+static void beginRenderLed() {
+  ink_sync::setActivityHook(ledPurpleBreatheTick);
+  epd::setBusyPollHook(ledPurpleBreatheTick);
+}
+
+static void endRenderLed() {
+  ink_sync::setActivityHook(nullptr);
+  epd::setBusyPollHook(nullptr);
+}
+
 static bool tryConnectSaved(uint32_t timeoutMs) {
   Preferences prefs;
   prefs.begin("jnr", true);
@@ -115,27 +138,31 @@ static bool tryConnectSaved(uint32_t timeoutMs) {
 }
 
 static void startNtp() {
-  // 北京时间 UTC+8
+  // 北京时间 UTC+8；不阻塞等待，scheduleSync 里会再认
   configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org", "time.nist.gov");
-  for (int i = 0; i < 30; i++) {
-    time_t now = time(nullptr);
-    if (now > 1700000000) {
-      g_ntpOk = true;
-      Serial.printf("[main] NTP OK %ld\n", (long)now);
-      return;
-    }
-    delay(200);
+  time_t now = time(nullptr);
+  if (now > 1700000000) {
+    g_ntpOk = true;
+    Serial.printf("[main] NTP OK %ld\n", (long)now);
+  } else {
+    Serial.println("[main] NTP 已发起，稍后就绪");
   }
-  Serial.println("[main] NTP 暂未就绪，稍后重试");
 }
 
-static void runSyncWithLed() {
-  led(40, 40, 0);  // 黄：同步中
+// restoreLocalIfNoUpdate：开机用。就绪屏会盖住上次画面，若 sync 无新帧则强制刷回 /last.bin
+static void runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
+  beginRenderLed();
   ink_sync::Result r = ink_sync::runOnce();
+  if (restoreLocalIfNoUpdate && r == ink_sync::Result::OkNoUpdate &&
+      frame_store::hasValidLastFrame()) {
+    Serial.println("[main] sync 无新帧，恢复本地缓存画面");
+    r = ink_sync::refreshLocal(true);
+  }
+  endRenderLed();
   if (r == ink_sync::Result::OkUpdated) {
-    // 下载/刷屏期间 ink_sync 内部阻塞；完成后常亮
     ledModeIdle();
   } else if (r == ink_sync::Result::OkNoUpdate) {
+    // 无更新 / 绑定页已显示跳过：绿灯闪一下提示已查询
     led(0, 60, 0);
     delay(120);
     ledModeIdle();
@@ -173,17 +200,22 @@ static void handleButtons() {
       break;
 
     case buttons::Event::ActionShort:
-      // 单击：仅未绑定立即 sync；已绑定不重刷（防误触，改双击）
+      // 未绑定单击：立即查是否已绑定；成功且有纪念日则拉图，否则继续 60s 轮询
       if (g_provisioning) break;
-      if (unbound) runSyncWithLed();
+      if (unbound) {
+        g_lastUnboundPollMs = millis();
+        Serial.println("[main] 未绑定：单击执行键，立即查绑定");
+        runSyncWithLed();
+      }
       break;
 
     case buttons::Event::ActionDouble:
       if (g_provisioning || unbound) break;
       if (frame_store::workMode() == frame_store::MODE_MINIPROG ||
           frame_store::workMode() == frame_store::MODE_LAN) {
-        ledFlashModeFast(true);
+        beginRenderLed();
         auto r = ink_sync::refreshLocal();
+        endRenderLed();
         if (r == ink_sync::Result::OkUpdated) {
           ledModeIdle();
         } else if (r == ink_sync::Result::Failed) {
@@ -285,13 +317,19 @@ void setup() {
 
   if (tryConnectSaved(15000)) {
     ledModeIdle();
-    wifi_setup::showReadyScreen();
     wifi_setup::startLocalAdmin();
     g_localAdmin = true;
     startNtp();
-    // 上电立即 sync 一次（未绑定拉 QR / 已绑定查更新）
+
+    // 先 sync：有新帧只全刷一次；无新帧再恢复 /last.bin（避免「先出旧图再清屏出新图」双刷）
+    // 等待期间墨屏双稳态仍保留断电前画面，不必先刷就绪屏
     g_lastUnboundPollMs = millis();
-    runSyncWithLed();
+    if (frame_store::hasValidLastFrame()) {
+      runSyncWithLed(true);
+    } else {
+      wifi_setup::showReadyScreen();
+      runSyncWithLed(false);
+    }
     return;
   }
 
