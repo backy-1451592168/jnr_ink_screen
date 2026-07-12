@@ -114,41 +114,8 @@ bool httpGet(const String& url, String& outBody, int& outCode) {
   return outCode > 0;
 }
 
-bool httpGetBinary(const String& url, uint8_t* dest, size_t maxLen, size_t& got) {
+bool readHttpBinaryBody(HTTPClient& http, uint8_t* dest, size_t maxLen, size_t& got) {
   got = 0;
-  if (url.startsWith("https://")) {
-    WiFiClientSecure client;
-    prepareClient(client);
-    HTTPClient http;
-    http.setTimeout(20000);
-    if (!http.begin(client, url)) return false;
-    int code = http.GET();
-    if (code != 200) {
-      http.end();
-      return false;
-    }
-    int len = http.getSize();
-    WiFiClient* stream = http.getStreamPtr();
-    while (http.connected() && (got < maxLen) && (len < 0 || (int)got < len)) {
-      if (g_cancel) {
-        http.end();
-        return false;
-      }
-      tickActivity();
-      size_t avail = stream->available();
-      if (!avail) {
-        delay(1);
-        continue;
-      }
-      size_t n = stream->readBytes(dest + got, min(avail, maxLen - got));
-      got += n;
-    }
-    http.end();
-    return got > 0;
-  }
-  HTTPClient http;
-  http.setTimeout(20000);
-  if (!http.begin(url)) return false;
   int code = http.GET();
   if (code != 200) {
     http.end();
@@ -174,6 +141,23 @@ bool httpGetBinary(const String& url, uint8_t* dest, size_t maxLen, size_t& got)
   return got > 0;
 }
 
+/** GET 二进制到 dest；下载过程可取消并 tick 紫灯 */
+bool httpGetBinary(const String& url, uint8_t* dest, size_t maxLen, size_t& got) {
+  // 整帧 ~192KB，隧道上留足时间
+  if (url.startsWith("https://")) {
+    WiFiClientSecure client;
+    prepareClient(client);
+    HTTPClient http;
+    http.setTimeout(60000);
+    if (!http.begin(client, url)) return false;
+    return readHttpBinaryBody(http, dest, maxLen, got);
+  }
+  HTTPClient http;
+  http.setTimeout(60000);
+  if (!http.begin(url)) return false;
+  return readHttpBinaryBody(http, dest, maxLen, got);
+}
+
 bool httpPostJson(const String& url, const String& json) {
   if (url.startsWith("https://")) {
     WiFiClientSecure client;
@@ -193,12 +177,6 @@ bool httpPostJson(const String& url, const String& json) {
   int code = http.POST(json);
   http.end();
   return code == 200;
-}
-
-String chunkUrl(const String& downloadUrl0, int index) {
-  int slash = downloadUrl0.lastIndexOf('/');
-  if (slash < 0) return "";
-  return downloadUrl0.substring(0, slash + 1) + String(index);
 }
 
 bool canRefreshNow() {
@@ -285,7 +263,6 @@ Result syncAgainstBase(const String& base) {
   }
 
   int64_t frameSize = jsonNum(body, "frameSize");
-  int64_t chunkCount = jsonNum(body, "chunkCount");
   int64_t contentVersion = jsonNum(body, "contentVersion");
   String frameCrcHex = jsonStr(body, "frameCrc");
   String downloadUrl = jsonStr(body, "downloadUrl");
@@ -300,7 +277,7 @@ Result syncAgainstBase(const String& base) {
     }
   }
 
-  if (frameSize <= 0 || chunkCount <= 0 || downloadUrl.isEmpty()) {
+  if (frameSize <= 0 || downloadUrl.isEmpty()) {
     Serial.println("[ink_sync] 帧元信息缺失");
     return Result::Failed;
   }
@@ -319,29 +296,13 @@ Result syncAgainstBase(const String& base) {
     return Result::Failed;
   }
 
-  size_t offset = 0;
-  for (int i = 0; i < (int)chunkCount; i++) {
-    if (g_cancel) {
-      free(buf);
-      return Result::Cancelled;
-    }
-    tickActivity();
-    String u = chunkUrl(downloadUrl, i);
-    size_t got = 0;
-    size_t remain = (size_t)frameSize - offset;
-    size_t maxChunk = remain < 1024 ? remain : 1024;
-    if (!httpGetBinary(u, buf + offset, maxChunk + 64, got) || got == 0) {
-      Serial.printf("[ink_sync] 分包 %d 失败\n", i);
-      free(buf);
-      return Result::Failed;
-    }
-    offset += got;
-  }
-
-  if (offset != (size_t)frameSize) {
-    Serial.printf("[ink_sync] 拼帧长度错误 %u/%lld\n", (unsigned)offset, (long long)frameSize);
+  Serial.printf("[ink_sync] 整帧下载 size=%lld\n", (long long)frameSize);
+  size_t got = 0;
+  if (!httpGetBinary(downloadUrl, buf, (size_t)frameSize, got) || got != (size_t)frameSize) {
+    Serial.printf("[ink_sync] 整帧下载失败 got=%u expect=%lld\n",
+                  (unsigned)got, (long long)frameSize);
     free(buf);
-    return Result::Failed;
+    return g_cancel ? Result::Cancelled : Result::Failed;
   }
 
   uint32_t crc = crc32Buf(buf, (size_t)frameSize);

@@ -1,4 +1,4 @@
-// 小程序推送模式：HTTP sync → 分包下载 → CRC → 刷屏 → ack
+// 小程序推送模式：HTTP sync → 整帧下载 → CRC → 刷屏 → ack
 #pragma once
 
 #include <Arduino.h>
@@ -12,7 +12,7 @@ enum class Result : uint8_t {
   Failed,
 };
 
-// 置位后分包循环会中断（执行键取消）
+// 置位后整帧下载循环会中断（执行键取消）
 void requestCancel();
 void clearCancel();
 bool isBusy();
