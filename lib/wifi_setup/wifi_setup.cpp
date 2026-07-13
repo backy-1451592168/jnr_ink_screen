@@ -62,8 +62,11 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   .sub{color:#888;font-size:13px;margin-bottom:18px}
   .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px}
   label{font-size:13px;color:#555;display:block;margin-bottom:6px}
-  input{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:15px;outline:none;background:#fff}
+  input[type="text"],input[type="password"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#fff;-webkit-user-select:text;user-select:text;-webkit-appearance:none}
   input:focus{border-color:#3b82f6}
+  .pass-wrap{position:relative}
+  .pass-wrap input{padding-right:48px}
+  .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:transparent;color:#666;font-size:13px;padding:0;margin:0;cursor:pointer}
   button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
   button:active{background:#2563eb}
   button:disabled{opacity:.6}
@@ -78,6 +81,11 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   .tip.ok{color:#16a34a}
   .tip.err,.item.err{color:#dc2626}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99}
+  .mask[hidden]{display:none}
+  .mask-box{background:#fff;border-radius:12px;padding:28px 24px;max-width:280px;text-align:center;font-size:15px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+  .spin{width:28px;height:28px;margin:0 auto 14px;border:3px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -85,24 +93,31 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <h1>设备配网</h1>
   <div class="sub">选择 WiFi 并输入密码，连接成功后进入设备信息页</div>
   <div class="card">
-    <div class="row"><label style="margin:0">附近的 WiFi</label><button class="ghost" id="btnScan" style="margin:0;width:auto;padding:8px 14px">刷新</button></div>
+    <div class="row"><label style="margin:0">附近的 WiFi</label><button type="button" class="ghost" id="btnScan" style="margin:0;width:auto;padding:8px 14px">刷新</button></div>
     <div class="list" id="list"><div class="item">点击「刷新」扫描附近 WiFi</div></div>
   </div>
   <div class="card">
-    <label>WiFi 名称 (SSID)</label>
-    <input id="ssid" autocomplete="off" placeholder="点击上方列表自动填入">
-    <label style="margin-top:12px">密码</label>
-    <input id="pass" type="password" autocomplete="off" placeholder="留空表示开放网络">
-    <button id="btnSave">保存并连接</button>
+    <label for="ssid">WiFi 名称 (SSID)</label>
+    <input id="ssid" type="text" name="ssid" inputmode="text" enterkeyhint="next" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="可手动输入，或点上方列表填入">
+    <label for="pass" style="margin-top:12px">密码</label>
+    <div class="pass-wrap">
+      <input id="pass" type="password" name="pass" inputmode="text" enterkeyhint="done" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="留空表示开放网络">
+      <button type="button" class="eye" id="btnEye" aria-label="显示或隐藏密码">显示</button>
+    </div>
+    <button type="button" id="btnSave">保存并连接</button>
     <div class="tip" id="tip"></div>
   </div>
-  <div class="card"><button class="ghost" id="btnReset">忘记网络 / 重置</button></div>
+  <div class="card"><button type="button" class="ghost" id="btnReset">忘记网络 / 重置</button></div>
   <div class="footer">DayIJoy · 心选日 · 设备配网</div>
+</div>
+<div class="mask" id="mask" hidden>
+  <div class="mask-box"><div class="spin"></div>请等待 WiFi 连接中...</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const list=$('list'),tip=$('tip');
+const list=$('list'),tip=$('tip'),mask=$('mask');
 function bars(r){if(r>=-55)return'●●●●';if(r>=-65)return'●●●○';if(r>=-75)return'●●○○';if(r>=-85)return'●○○○';return'○○○○';}
+function setLoading(on){mask.hidden=!on;$('btnSave').disabled=!!on;$('btnScan').disabled=!!on;}
 async function scan(){
   list.innerHTML='<div class="item">扫描中...</div>';
   try{
@@ -111,8 +126,10 @@ async function scan(){
     list.innerHTML='';
     j.forEach(n=>{
       const div=document.createElement('div');div.className='item';
-      div.innerHTML=`<span>${n.ssid||'(隐藏网络)'} ${n.enc?'🔒':''}</span><span class="rssi">${bars(n.rssi)} ${n.rssi}dBm</span>`;
-      div.onclick=()=>{document.querySelectorAll('.item').forEach(i=>i.classList.remove('sel'));div.classList.add('sel');$('ssid').value=n.ssid;$('pass').focus();};
+      const name=document.createElement('span');name.textContent=(n.ssid||'(隐藏网络)')+(n.enc?' 🔒':'');
+      const rssi=document.createElement('span');rssi.className='rssi';rssi.textContent=bars(n.rssi)+' '+n.rssi+'dBm';
+      div.appendChild(name);div.appendChild(rssi);
+      div.onclick=()=>{document.querySelectorAll('.item').forEach(i=>i.classList.remove('sel'));div.classList.add('sel');$('ssid').value=n.ssid||'';$('pass').focus();};
       list.appendChild(div);
     });
   }catch(e){list.innerHTML='<div class="item err">扫描失败，请重试</div>';}
@@ -120,21 +137,27 @@ async function scan(){
 async function save(){
   const ssid=$('ssid').value.trim();
   if(!ssid){tip.textContent='请输入或选择 WiFi 名称';tip.className='tip err';return;}
-  tip.textContent='正在连接路由器，请稍候（约 20 秒）...';tip.className='tip';$('btnSave').disabled=true;
+  tip.textContent='';tip.className='tip';
+  setLoading(true);
   try{
     const fd=new FormData();fd.append('ssid',ssid);fd.append('pass',$('pass').value);
     const r=await fetch('/save',{method:'POST',body:fd});
     const t=await r.text();
-    if(!r.ok){tip.textContent=t||'连接失败';tip.className='tip err';$('btnSave').disabled=false;return;}
+    if(!r.ok){setLoading(false);tip.textContent=t||'连接失败';tip.className='tip err';return;}
     tip.textContent=t||'连接成功，正在跳转...';tip.className='tip ok';
-    setTimeout(()=>{location.href='/device';},600);
-  }catch(e){tip.textContent='提交失败：'+e;tip.className='tip err';$('btnSave').disabled=false;}
+    location.href='/device';
+  }catch(e){setLoading(false);tip.textContent='提交失败：'+e;tip.className='tip err';}
 }
 async function reset(){
   if(!confirm('确定清空已保存的 WiFi 配置吗？'))return;
   await fetch('/reset',{method:'POST'});
   tip.textContent='已重置，设备即将重启...';tip.className='tip ok';
 }
+$('btnEye').onclick=()=>{
+  const p=$('pass');const show=p.type==='password';
+  p.type=show?'text':'password';
+  $('btnEye').textContent=show?'隐藏':'显示';
+};
 $('btnScan').onclick=scan;$('btnSave').onclick=save;$('btnReset').onclick=reset;
 </script>
 </body>
@@ -171,6 +194,11 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
   .tip.ok{color:#16a34a}
   .tip.err{color:#dc2626}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
+  .done-box{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}
+  .done-box.show{display:block}
+  .done-box a{color:#2563eb;word-break:break-all;font-size:14px}
+  .done-actions{display:flex;gap:8px;margin-top:10px}
+  .done-actions button{margin-top:0}
 </style>
 </head>
 <body>
@@ -188,15 +216,24 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
     <label style="margin-top:12px">每日自动同步时间</label>
     <select id="syncHour"></select>
     <div class="tip">接口路径写死在固件；此处只配域名/端口等前缀。主地址留空用默认值。请求时先试主，失败再试备，下次仍先主。同步时间为本地整点，每天只自动拉取一次（拉图逻辑后续实现）。</div>
-    <button id="btnSave">保存设置</button>
-    <button class="ok" id="btnFinish">完成并重启</button>
+    <button type="button" id="btnSave">保存设置</button>
+    <button type="button" class="ok" id="btnFinish">完成并重启</button>
     <div class="tip" id="tip"></div>
+    <div class="done-box" id="doneBox">
+      <div class="tip ok" style="margin:0 0 8px">设备即将重启。请先改连家里 WiFi，再用下方地址打开管理页：</div>
+      <a id="adminLink" href="#" target="_blank" rel="noopener"></a>
+      <div class="done-actions">
+        <button type="button" class="ghost" id="btnCopy">复制地址</button>
+        <button type="button" id="btnOpen">打开管理页</button>
+      </div>
+    </div>
   </div>
   <div class="footer">DayIJoy · 心选日 · 局域网管理</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
 const tip=$('tip');
+let adminUrl='';
 (function(){
   const sel=$('syncHour');
   for(let h=0;h<24;h++){
@@ -214,22 +251,35 @@ function apiForm(){
   fd.append('syncHour',$('syncHour').value);
   return fd;
 }
+function showAdminLink(url){
+  adminUrl=url||'';
+  const a=$('adminLink');
+  a.href=adminUrl||'#';
+  a.textContent=adminUrl||'(无局域网 IP)';
+  $('doneBox').classList.add('show');
+}
 async function load(){
   try{
     const j=await(await fetch('/info')).json();
     const hour=(j.syncHour==null?0:Number(j.syncHour));
+    adminUrl=j.adminUrl&&j.adminUrl!=='-'?j.adminUrl:'';
     const rows=[
       ['WiFi',j.ssid||'-'],
       ['局域网 IP',j.ip||'-'],
       ['网关',j.gateway||'-'],
       ['子网掩码',j.mask||'-'],
       ['MAC',j.mac||'-'],
-      ['管理页',j.adminUrl||'-'],
+      ['管理页',adminUrl||'-'],
       ['主服务地址',j.apiBase||'-'],
       ['备用服务地址',j.apiBaseBak||'(未设置)'],
       ['每日同步',String(hour).padStart(2,'0')+':00'],
     ];
-    $('info').innerHTML=rows.map(([k,v])=>`<div class="row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('');
+    $('info').innerHTML=rows.map(([k,v])=>{
+      if(k==='管理页'&&adminUrl){
+        return `<div class="row"><span class="k">${esc(k)}</span><span class="v"><a href="${esc(adminUrl)}">${esc(adminUrl)}</a></span></div>`;
+      }
+      return `<div class="row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`;
+    }).join('');
     $('apiBase').value=j.apiBase||'';
     $('apiBaseBak').value=j.apiBaseBak||'';
     $('syncHour').value=String(hour);
@@ -247,13 +297,31 @@ async function saveApi(){
 }
 async function finish(){
   tip.textContent='正在保存并重启...';tip.className='tip';
+  $('btnFinish').disabled=true;
   try{
+    if(!adminUrl){
+      try{const j=await(await fetch('/info')).json();adminUrl=j.adminUrl&&j.adminUrl!=='-'?j.adminUrl:'';}catch(e){}
+    }
     await fetch('/api-base',{method:'POST',body:apiForm()});
     await fetch('/finish',{method:'POST'});
-    tip.textContent='设备即将重启，请改连家里 WiFi 后用局域网 IP 访问管理页';tip.className='tip ok';
-  }catch(e){tip.textContent='操作失败：'+e;tip.className='tip err';}
+    tip.textContent='设备即将重启';tip.className='tip ok';
+    showAdminLink(adminUrl);
+  }catch(e){tip.textContent='操作失败：'+e;tip.className='tip err';$('btnFinish').disabled=false;}
+}
+async function copyUrl(){
+  if(!adminUrl){tip.textContent='暂无管理页地址';tip.className='tip err';return;}
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(adminUrl);
+    }else{
+      const ta=document.createElement('textarea');ta.value=adminUrl;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+    }
+    tip.textContent='已复制：'+adminUrl;tip.className='tip ok';
+  }catch(e){tip.textContent='复制失败，请长按链接手动复制';tip.className='tip err';}
 }
 $('btnSave').onclick=saveApi;$('btnFinish').onclick=finish;
+$('btnCopy').onclick=copyUrl;
+$('btnOpen').onclick=()=>{if(adminUrl)location.href=adminUrl;};
 load();
 </script>
 </body>
