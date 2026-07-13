@@ -16,7 +16,7 @@
 #include "wifi_setup.h"
 
 #ifndef PIN_RGB_LED
-#define PIN_RGB_LED 48
+#define PIN_RGB_LED 21
 #endif
 
 static Adafruit_NeoPixel rgb(1, PIN_RGB_LED, NEO_GRB + NEO_KHZ800);

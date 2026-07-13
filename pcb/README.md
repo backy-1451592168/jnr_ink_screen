@@ -6,19 +6,23 @@
 
 | 文件 | 用途 | 嘉立创下单时上传位置 |
 | --- | --- | --- |
-| `InkTime_JLC_EDA.zip` | 嘉立创 EDA 源工程（原理图 + PCB） | 不上传；本地打开改板用 |
+| `jnr_lnk_screen_EDA.zip` / `.epro` | 嘉立创 EDA 源工程（原理图 + PCB） | 不上传；本地打开改板用 |
 | `Gerber_PCB1_2026-07-12.zip` | Gerber 光绘包（制板数据） | **PCB 下单 → 上传 Gerber** |
 | `BOM.csv` | 物料清单（元器件型号 / 立创编号） | **SMT 贴片 → 上传 BOM** |
 | `PickAndPlace.xlsx` | 坐标文件（贴片机放件位置） | **SMT 贴片 → 上传坐标文件** |
 
 ---
 
-### `InkTime_JLC_EDA.zip`
+### `jnr_lnk_screen_EDA.zip` / `jnr_lnk_screen_EDA.epro`
 
-嘉立创 EDA（EasyEDA）工程导出包，内含原理图（`.esch`）、PCB（`.epcb`）、符号与封装等。
+嘉立创 EDA 专业版工程包（二者内容相同；`.epro` 本质就是 zip）。
 
-- 用 [嘉立创 EDA 专业版 / 标准版](https://lceda.cn/) 打开后可改原理图、布线、再导出 Gerber / BOM / 坐标。
-- **打板不需要传这个包**，只作为可编辑源文件留档。
+**导入方式**（开始页 → 导入嘉立创EDA(专业版)）：
+
+- 选 `jnr_lnk_screen_EDA.epro` 或 `jnr_lnk_screen_EDA.zip` 均可
+- 包内根目录必须直接是 `project.json`、`SHEET/`、`PCB/`……**不能**再套一层 `jnr_lnk_screen_EDA/` 文件夹，否则会报「文件格式不正确」
+
+本地改板：用专业版打开后改原理图/PCB，再「另存为(本地)」导出；或直接编辑 `jnr_lnk_screen_EDA/` 目录后，在该目录内重新打扁平压缩包。
 
 ### `Gerber_PCB1_2026-07-12.zip`
 
@@ -44,6 +48,22 @@
 
 当前主要物料：ESP32-S3-WROOM-1-N8R8、MIC5219 3.3V LDO、0603 阻容、轻触开关等。
 
+### WS2812 指示灯接口（H7）
+
+板底左侧、电源焊盘（G/5V/B+/G）右侧新增 **H7**（1×4P 2.54mm 排针，与灯珠脚序一致）：
+
+| H7 脚 | 丝印 | 连接 |
+| --- | --- | --- |
+| 1 | DOUT | 空（可串下颗灯） |
+| 2 | VBAT | 电池电压（约 3.7～4.2V，满足灯珠 ≥3.5V） |
+| 3 | GND | 地 |
+| 4 | DIN | **GPIO21** |
+
+固件数据脚请用 `PIN_RGB_LED=21`。
+
+> **注意**：本板为 ESP32-S3 + OPI PSRAM（N8R8/N16R8），**GPIO33–37 已被 PSRAM 占用**，不可接 LED/按键。按键现为 GPIO4/5/6。
+改完原理图/PCB 后需在嘉立创 EDA 里再导出 Gerber，替换本目录旧光绘包再下单。
+
 ### `PickAndPlace.xlsx`
 
 贴片坐标文件（Centroid / CPL），标明每个元器件在板子上的 X/Y、旋转角度、正反面。
@@ -68,4 +88,4 @@
 3. 上传 `BOM.csv` + `PickAndPlace.xlsx`
 4. 核对元器件匹配与贴片面 → 一起下单
 
-改板流程：用 EDA 打开 `InkTime_JLC_EDA.zip` → 修改 → 重新导出 Gerber / BOM / 坐标，替换本目录对应文件即可。
+改板流程：用 EDA 打开 `jnr_lnk_screen_EDA.zip` → 修改 → 重新导出 Gerber / BOM / 坐标，替换本目录对应文件即可。
