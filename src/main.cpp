@@ -138,14 +138,31 @@ static bool tryConnectSaved(uint32_t timeoutMs) {
 }
 
 static void startNtp() {
-  // 北京时间 UTC+8；不阻塞等待，scheduleSync 里会再认
-  configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org", "time.nist.gov");
+  // UTC + POSIX TZ（CST-8 = 东八区）；比单靠 configTime 偏移更稳
+  configTime(0, 0, "ntp.aliyun.com", "pool.ntp.org", "time.nist.gov");
+  setenv("TZ", "CST-8", 1);
+  tzset();
   time_t now = time(nullptr);
   if (now > 1700000000) {
     g_ntpOk = true;
     Serial.printf("[main] NTP OK %ld\n", (long)now);
   } else {
     Serial.println("[main] NTP 已发起，稍后就绪");
+  }
+}
+
+/** NTP 就绪后：若本地时间已过今日 syncHour，把开机那次 sync 记成今日已同步 */
+static void markDailySyncDoneIfPastHour() {
+  if (!frame_store::bound()) return;
+  time_t now = time(nullptr);
+  if (now <= 1700000000) return;
+  g_ntpOk = true;
+  struct tm ti;
+  localtime_r(&now, &ti);
+  uint8_t hour = wifi_setup::syncHour();
+  if (ti.tm_hour >= hour) {
+    g_lastSyncDay = ti.tm_yday;
+    Serial.printf("[main] 开机已过 syncHour=%u，记今日已同步 yday=%d\n", hour, g_lastSyncDay);
   }
 }
 
@@ -176,7 +193,7 @@ static void runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
 }
 
 static void handleButtons() {
-  bool busy = ink_sync::isBusy();
+  bool busy = ink_sync::isBusy() || wifi_setup::lanBusy();
   buttons::Event ev = buttons::poll(busy);
   if (ev == buttons::Event::None) return;
 
@@ -190,13 +207,20 @@ static void handleButtons() {
         auto next = (m == frame_store::MODE_MINIPROG) ? frame_store::MODE_LAN
                                                       : frame_store::MODE_MINIPROG;
         frame_store::setWorkMode(next);
+        wifi_setup::setLanUploadEnabled(next == frame_store::MODE_LAN);
         ledModeIdle();
-        Serial.printf("[main] workMode=%d\n", (int)next);
+        Serial.printf("[main] workMode=%d lanUpload=%d\n", (int)next,
+                      (int)(next == frame_store::MODE_LAN));
+        // 切入局域网传图时直接刷出地址，免再长按
+        if (next == frame_store::MODE_LAN) {
+          wifi_setup::showUploadAddressScreen();
+        }
       }
       break;
 
     case buttons::Event::ActionCancel:
       ink_sync::requestCancel();
+      wifi_setup::requestLanCancel();
       break;
 
     case buttons::Event::ActionShort:
@@ -234,8 +258,16 @@ static void handleButtons() {
     case buttons::Event::ActionLong:
       if (g_provisioning) break;
       if (frame_store::workMode() == frame_store::MODE_LAN && !unbound) {
-        // 局域网模式长按：文档是显示传图地址；本轮未做 /upload，改为立即 sync 恢复正式画面
-        runSyncWithLed();
+        // 长按：显示/退出传图地址页
+        if (wifi_setup::toggleUploadAddressScreen()) {
+          ledModeIdle();
+        } else {
+          beginRenderLed();
+          auto r = ink_sync::refreshLocal(true);
+          endRenderLed();
+          if (r != ink_sync::Result::OkUpdated) ledFail();
+          else ledModeIdle();
+        }
       } else {
         runSyncWithLed();
       }
@@ -277,22 +309,25 @@ static void scheduleSync() {
     return;
   }
 
-  // 已绑定：每日 syncHour 整点附近一次
+  // 已绑定：每日 syncHour 起可触发一次；错过整点也会在当天补跑
   if (!g_ntpOk) {
-    time_t now = time(nullptr);
-    if (now > 1700000000) g_ntpOk = true;
+    time_t t = time(nullptr);
+    if (t > 1700000000) g_ntpOk = true;
     else return;
   }
 
   time_t now = time(nullptr);
   struct tm ti;
   localtime_r(&now, &ti);
-  int yday = ti.tm_yday;
+  if (g_lastSyncDay == ti.tm_yday) return;
+
   uint8_t hour = wifi_setup::syncHour();
-  if (ti.tm_hour == hour && ti.tm_min < 2 && g_lastSyncDay != yday) {
-    g_lastSyncDay = yday;
-    runSyncWithLed();
-  }
+  if (ti.tm_hour < hour) return;
+
+  g_lastSyncDay = ti.tm_yday;
+  Serial.printf("[main] 每日 sync syncHour=%u %02d:%02d yday=%d\n", hour,
+                ti.tm_hour, ti.tm_min, ti.tm_yday);
+  runSyncWithLed();
 }
 
 void setup() {
@@ -312,6 +347,8 @@ void setup() {
   if (!frame_store::begin()) {
     Serial.println("[main] frame_store 失败，继续（无本地帧缓存）");
   }
+  // NVS 屏参 → epd 逻辑分辨率（须在 begin 之后）
+  frame_store::applyStoredScreenSize();
 
   buttons::begin();
 
@@ -324,12 +361,14 @@ void setup() {
     // 先 sync：有新帧只全刷一次；无新帧再恢复 /last.bin（避免「先出旧图再清屏出新图」双刷）
     // 等待期间墨屏双稳态仍保留断电前画面，不必先刷就绪屏
     g_lastUnboundPollMs = millis();
+    wifi_setup::setLanUploadEnabled(frame_store::workMode() == frame_store::MODE_LAN);
     if (frame_store::hasValidLastFrame()) {
       runSyncWithLed(true);
     } else {
       wifi_setup::showReadyScreen();
       runSyncWithLed(false);
     }
+    markDailySyncDoneIfPastHour();
     return;
   }
 
@@ -362,6 +401,9 @@ void loop() {
   }
 
   if (g_localAdmin) {
+    int lanR = wifi_setup::pollLanUploadApply(ledPurpleBreatheTick);
+    if (lanR == 1) ledModeIdle();
+    else if (lanR < 0) ledFail();
     scheduleSync();
     delay(20);
     return;

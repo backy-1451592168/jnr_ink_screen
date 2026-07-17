@@ -416,6 +416,7 @@ def glyph_rows(ch, cell_w=12, cell_h=24):
     f = tfont(cell_h, MAC_FONT, MAC_FONT_INDEX)
     bbox = f.getbbox(ch)
     w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    # mode "1" 像素值为 0/1，不能用 >=100（会导致整表空字形）
     mono = Image.new("1", (cell_w, cell_h), 0)
     ImageDraw.Draw(mono).text(
         ((cell_w - w) // 2 - bbox[0], (cell_h - h) // 2 - bbox[1]),
@@ -425,7 +426,7 @@ def glyph_rows(ch, cell_w=12, cell_h=24):
     for y in range(cell_h):
         b0 = b1 = 0
         for x in range(cell_w):
-            if px[x, y] >= 100:
+            if px[x, y]:
                 if x < 8:
                     b0 |= (1 << (7 - x))
                 else:
@@ -435,24 +436,8 @@ def glyph_rows(ch, cell_w=12, cell_h=24):
 
 
 def emit_font_header():
-    glyphs = [glyph_rows(chr(code)) for code in range(0x20, 0x7F)]
-    lines = [
-        "// 自动生成，请勿手改。源：scripts/gen_config_screen.py",
-        "// 12x24 ASCII 点阵字体（0x20-0x7E），每字符 24 行 x 2 字节/行。",
-        "#pragma once",
-        "#include <Arduino.h>",
-        "",
-        "#define FONT12X24_FIRST 0x20",
-        "#define FONT12X24_LAST 0x7E",
-        "#define FONT12X24_BYTES_PER_GLYPH 48",
-        "static const uint8_t kFont12x24[] PROGMEM = {",
-    ]
-    for code, rows in zip(range(0x20, 0x7F), glyphs):
-        lines.append("  " + ",".join(f"0x{b:02X}" for b in rows) +
-                     f", // 0x{code:02X} '{chr(code)}'")
-    lines += ["};", ""]
-    with open(FONT_H, "w") as f:
-        f.write("\n".join(lines))
+    # 字库已改由 scripts/gen_epd_font.py 生成（基线对齐 + 中文子集）
+    print("跳过 font12x24.h：请运行 scripts/gen_epd_font.py", flush=True)
 
 
 def main():

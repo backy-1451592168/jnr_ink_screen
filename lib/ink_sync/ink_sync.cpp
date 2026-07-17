@@ -222,6 +222,10 @@ Result syncAgainstBase(const String& base) {
   uint32_t localVer = frame_store::contentVersion();
   String url = base + "/device/ink_frame/sync?mac=" + mac +
                "&content_version=" + String(localVer);
+  // 上报局域网 IP，供小程序展示 /upload、/device
+  if (WiFi.status() == WL_CONNECTED) {
+    url += "&ip=" + WiFi.localIP().toString();
+  }
 
   String body;
   int code = 0;
@@ -246,6 +250,11 @@ Result syncAgainstBase(const String& base) {
   if (type == "sync_ok") {
     bool bound = jsonBoolTrue(body, "bound") || body.indexOf("\"bound\":true") >= 0;
     int64_t cv = jsonNum(body, "contentVersion");
+    int64_t sw = jsonNum(body, "screenWidth");
+    int64_t sh = jsonNum(body, "screenHeight");
+    if (sw > 0 && sh > 0) {
+      frame_store::setScreenSize((int)sw, (int)sh);
+    }
     // 云端已绑但尚无纪念日新帧（本地仍是绑定页 version=1）：不置 bound，继续 60s 轮询
     if (bound && frame_store::contentVersion() <= 1) {
       Serial.println("[ink_sync] sync_ok 已绑定但无纪念日画面，继续等待");
@@ -266,6 +275,16 @@ Result syncAgainstBase(const String& base) {
   int64_t contentVersion = jsonNum(body, "contentVersion");
   String frameCrcHex = jsonStr(body, "frameCrc");
   String downloadUrl = jsonStr(body, "downloadUrl");
+
+  // 服务端下发屏参时先切换（横/竖行跨度不同，须在 drawImageRaw 前生效）
+  int64_t sw = jsonNum(body, "screenWidth");
+  int64_t sh = jsonNum(body, "screenHeight");
+  if (sw > 0 && sh > 0) {
+    if (!frame_store::setScreenSize((int)sw, (int)sh)) {
+      Serial.printf("[ink_sync] 屏参非法 %lldx%lld\n", (long long)sw, (long long)sh);
+      return Result::Failed;
+    }
+  }
 
   // 未绑定轮询：屏上已是同一绑定页则只确认状态，不下载不刷屏
   if (type == "bind_qr") {

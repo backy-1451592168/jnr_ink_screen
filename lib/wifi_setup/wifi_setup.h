@@ -28,6 +28,27 @@ void startAP();
 // STA 已联网后启动局域网管理页（/device），不启 AP。
 void startLocalAdmin();
 
+// 青灯局域网传图：开关 GET/POST /upload（管理页 /device 始终可用）。
+void setLanUploadEnabled(bool enabled);
+bool lanUploadEnabled();
+
+// 墨屏显示传图地址；再调一次则恢复 /last.bin（由返回值区分）。
+// 返回 true=已显示地址页；false=已请求恢复缓存（调用方刷屏）。
+bool toggleUploadAddressScreen();
+// 强制刷出传图地址页（切入局域网模式时用，不走 toggle 关掉逻辑）。
+bool showUploadAddressScreen();
+bool uploadAddressVisible();
+
+// 局域网收图/刷屏中（供主循环 busy / 取消）。
+bool lanBusy();
+void requestLanCancel();
+
+// 若有待刷的局域网帧则刷屏写缓存。
+// 返回：0=无任务，1=成功，-1=失败/取消。
+// activityHook：刷屏期间回调（紫呼吸灯）；可为 nullptr。
+using LanActivityHook = void (*)();
+int pollLanUploadApply(LanActivityHook hook = nullptr);
+
 // 主服务根地址；空则返回默认值。轮询时先试主，失败再试备，下次仍先主。
 String apiBase();
 

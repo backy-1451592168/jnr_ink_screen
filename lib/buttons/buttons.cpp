@@ -16,7 +16,7 @@ namespace {
 
 constexpr uint32_t kDebounceMs = 50;
 constexpr uint32_t kShortMaxMs = 800;
-constexpr uint32_t kLongMs = 800;
+constexpr uint32_t kActionLongMs = 2000;  // 执行键长按：到点即触发，不等松手
 constexpr uint32_t kDoubleClickMs = 400;  // 两次短按间隔上限
 constexpr uint32_t kReconfigMs = 3000;
 constexpr uint32_t kFactoryMs = 8000;
@@ -32,8 +32,8 @@ struct Btn {
   uint32_t lastChange;
   uint32_t pressStart;
   bool pressed;
-  bool longFired;  // 系统键已触发过某档
-  uint8_t stage;   // 0=无 1=已报3s 2=已报8s
+  bool longFired;  // 执行键长按已触发（松手忽略）
+  uint8_t stage;   // 保留字段（未用）
 };
 
 Btn g_mode{PIN_BTN_MODE, false, true, 0, 0, false, false, 0};
@@ -124,21 +124,40 @@ Event poll(bool busy) {
     return Event::None;
   }
 
-  uint32_t actHeld = updateRelease(g_action);
-  if (actHeld > 0) {
-    if (actHeld >= kLongMs) {
-      g_actionClickPending = false;
-      return Event::ActionLong;
-    }
-    // 短按：窗口内第二次 → 双击；否则挂起等超时再报单击
+  // 执行键：长按 2s 到点即触发（不等松手）；短按/双击仍在松手判定
+  {
+    bool raw = digitalRead(g_action.pin) == LOW;
     uint32_t now = millis();
-    if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
-      g_actionClickPending = false;
-      return Event::ActionDouble;
+    if (raw != g_action.lastRaw) {
+      g_action.lastRaw = raw;
+      g_action.lastChange = now;
     }
-    g_actionClickPending = true;
-    g_actionClickAt = now;
-    return Event::None;
+    if (now - g_action.lastChange >= kDebounceMs) {
+      if (raw && !g_action.pressed) {
+        g_action.pressed = true;
+        g_action.pressStart = now;
+        g_action.longFired = false;
+      } else if (raw && g_action.pressed) {
+        if (!g_action.longFired && (now - g_action.pressStart) >= kActionLongMs) {
+          g_action.longFired = true;
+          g_actionClickPending = false;
+          return Event::ActionLong;
+        }
+      } else if (!raw && g_action.pressed) {
+        bool wasLong = g_action.longFired;
+        g_action.pressed = false;
+        g_action.longFired = false;
+        if (!wasLong) {
+          // 短按：窗口内第二次 → 双击；否则挂起等超时再报单击
+          if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
+            g_actionClickPending = false;
+            return Event::ActionDouble;
+          }
+          g_actionClickPending = true;
+          g_actionClickAt = now;
+        }
+      }
+    }
   }
 
   if (g_actionClickPending && (millis() - g_actionClickAt) > kDoubleClickMs) {

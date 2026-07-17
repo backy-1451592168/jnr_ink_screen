@@ -5,9 +5,13 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <time.h>
 
 #include "epd.h"
+#include "frame_store.h"
 #include "ui_config_screen.h"
+#include "ui_lan_upload_screen.h"
+#include "ui_upload_page.h"
 
 namespace wifi_setup {
 
@@ -45,6 +49,27 @@ uint32_t g_scanTs = 0;
 bool g_apReady = false;
 bool g_httpReady = false;
 bool g_dnsOn = false;
+
+// 局域网传图
+bool g_lanUploadEnabled = false;
+bool g_uploadAddrShown = false;
+bool g_lanBusy = false;
+volatile bool g_lanCancel = false;
+uint8_t* g_uploadBuf = nullptr;
+size_t g_uploadPos = 0;
+bool g_uploadOverflow = false;
+bool g_lanApplyPending = false;
+
+uint32_t crc32Buf(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      crc = (crc & 1) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+    }
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
 
 // ---------- HTML：配网页 ----------
 const char kIndexHtml[] PROGMEM = R"HTML(
@@ -541,7 +566,9 @@ void handleInfo() {
   json += "\"adminUrl\":\"" + jsonEscape(admin) + "\",";
   json += "\"apiBase\":\"" + jsonEscape(readApiBaseFromNvs()) + "\",";
   json += "\"apiBaseBak\":\"" + jsonEscape(readApiBaseBakFromNvs()) + "\",";
-  json += "\"syncHour\":" + String(readSyncHourFromNvs());
+  json += "\"syncHour\":" + String(readSyncHourFromNvs()) + ",";
+  json += "\"screenWidth\":" + String(frame_store::screenWidth()) + ",";
+  json += "\"screenHeight\":" + String(frame_store::screenHeight());
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -595,13 +622,104 @@ void handleFinish() {
   ESP.restart();
 }
 
+void handleUploadGet() {
+  if (!g_lanUploadEnabled) {
+    server.send(404, "text/plain; charset=utf-8", "请先短按模式键切到局域网传图（青灯）");
+    return;
+  }
+  server.sendHeader("Cache-Control", "no-store");
+  server.send_P(200, "text/html; charset=utf-8", kUploadPage);
+}
+
+void handleUploadWrite() {
+  HTTPUpload& u = server.upload();
+  if (u.status == UPLOAD_FILE_START) {
+    g_uploadPos = 0;
+    g_uploadOverflow = false;
+    g_lanCancel = false;
+    const size_t need = epd::frameBytes();
+    if (!g_uploadBuf) {
+      g_uploadBuf = (uint8_t*)ps_malloc(need);
+    }
+    if (!g_uploadBuf) {
+      Serial.println("[wifi_setup] upload PSRAM 分配失败");
+      g_uploadOverflow = true;
+    }
+    g_lanBusy = true;
+    Serial.printf("[wifi_setup] upload start name=%s\n", u.filename.c_str());
+  } else if (u.status == UPLOAD_FILE_WRITE) {
+    if (g_lanCancel) {
+      g_uploadOverflow = true;
+      return;
+    }
+    if (!g_uploadBuf || g_uploadOverflow) return;
+    if (g_uploadPos + u.currentSize > epd::frameBytes()) {
+      g_uploadOverflow = true;
+      return;
+    }
+    memcpy(g_uploadBuf + g_uploadPos, u.buf, u.currentSize);
+    g_uploadPos += u.currentSize;
+  } else if (u.status == UPLOAD_FILE_END) {
+    Serial.printf("[wifi_setup] upload end bytes=%u\n", (unsigned)g_uploadPos);
+  }
+}
+
+void handleUploadPost() {
+  if (!g_lanUploadEnabled) {
+    g_lanBusy = false;
+    server.send(403, "text/plain; charset=utf-8", "局域网传图未启用");
+    return;
+  }
+  if (g_lanCancel) {
+    g_lanBusy = false;
+    server.send(499, "text/plain; charset=utf-8", "已取消");
+    return;
+  }
+  if (g_uploadOverflow || !g_uploadBuf || g_uploadPos != epd::frameBytes()) {
+    g_lanBusy = false;
+    server.send(400, "text/plain; charset=utf-8",
+                "帧长度须为 192000 字节（480x800 或 800x480 六色 packE6）");
+    return;
+  }
+
+  // 上传页用 query 传 screenWidth/screenHeight（multipart 附加字段在 ESP 上不可靠）
+  int w = frame_store::screenWidth();
+  int h = frame_store::screenHeight();
+  if (server.hasArg("screenWidth") && server.hasArg("screenHeight")) {
+    w = server.arg("screenWidth").toInt();
+    h = server.arg("screenHeight").toInt();
+  }
+  if (!frame_store::setScreenSize(w, h)) {
+    g_lanBusy = false;
+    server.send(400, "text/plain; charset=utf-8",
+                "不支持的分辨率（仅 480x800 或 800x480）");
+    return;
+  }
+
+  g_lanApplyPending = true;
+  // 先回包，避免刷屏 10–20s 导致浏览器超时；主循环 pollLanUploadApply 真正刷屏
+  server.send(200, "text/plain; charset=utf-8", "上传成功，正在刷屏");
+}
+
+void handleRootSta() {
+  if (g_lanUploadEnabled) {
+    server.sendHeader("Location", "/upload", true);
+  } else {
+    server.sendHeader("Location", "/device", true);
+  }
+  server.send(302, "text/plain", "");
+}
+
 void handleNotFound() {
   if (g_apReady) {
     handleCaptivePortal();
     return;
   }
-  // STA 管理页：未知路径转到 /device
-  server.sendHeader("Location", "/device", true);
+  if (g_lanUploadEnabled) {
+    server.sendHeader("Location", "/upload", true);
+  } else {
+    server.sendHeader("Location", "/device", true);
+  }
   server.send(302, "text/plain", "");
 }
 
@@ -655,10 +773,9 @@ void setupHttpAp() {
 
 void setupHttpSta() {
   registerCommonRoutes();
-  server.on("/", HTTP_GET, []() {
-    server.sendHeader("Location", "/device", true);
-    server.send(302, "text/plain", "");
-  });
+  server.on("/", HTTP_GET, handleRootSta);
+  server.on("/upload", HTTP_GET, handleUploadGet);
+  server.on("/upload", HTTP_POST, handleUploadPost, handleUploadWrite);
   server.onNotFound(handleNotFound);
   server.begin();
   g_httpReady = true;
@@ -693,6 +810,8 @@ bool flushWithCooldown(const char* tag) {
 }  // namespace
 
 void showConfigScreen() {
+  // 配网 RLE 点阵固定竖屏 480×800，临时切逻辑分辨率（不改 NVS）
+  epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
   epd::clear(epd::WHITE);
   epd::drawImageRle(kCfgScreenRle, kCfgScreenRleLen);
 
@@ -704,6 +823,8 @@ void showConfigScreen() {
 }
 
 void showReadyScreen() {
+  // 就绪 ASCII 排版按竖屏坐标写的；临时竖屏刷，避免横屏模式下 y>480 被裁切
+  epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
   epd::clear(epd::WHITE);
 
   const char* title = "DayIJoy Ready";
@@ -724,9 +845,12 @@ void showReadyScreen() {
 
   Serial.printf("[wifi_setup] 就绪画面 IP=%s\n", ip.c_str());
   flushWithCooldown("就绪画面");
+  // 恢复用户屏参，供后续 sync / 局域网帧按正确方向刷
+  frame_store::applyStoredScreenSize();
 }
 
 void showSyncFailScreen() {
+  epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
   epd::clear(epd::WHITE);
   String base = apiBase();
   epd::drawText(40, 80, "Sync failed", epd::BLACK, 2);
@@ -745,6 +869,7 @@ void showSyncFailScreen() {
   epd::drawText(40, 460, "to retry sync.", epd::BLACK, 2);
   Serial.printf("[wifi_setup] sync 失败提示 apiBase=%s\n", base.c_str());
   flushWithCooldown("sync失败提示");
+  frame_store::applyStoredScreenSize();
 }
 
 void applySavedStaticIp() {
@@ -824,6 +949,82 @@ void startLocalAdmin() {
   g_dnsOn = false;
   WiFi.setSleep(false);
   setupHttpSta();
+}
+
+void setLanUploadEnabled(bool enabled) {
+  g_lanUploadEnabled = enabled;
+  if (!enabled) {
+    g_uploadAddrShown = false;
+    g_lanApplyPending = false;
+  }
+  Serial.printf("[wifi_setup] lanUpload=%d\n", (int)enabled);
+}
+
+bool lanUploadEnabled() { return g_lanUploadEnabled; }
+
+bool uploadAddressVisible() { return g_uploadAddrShown; }
+
+bool showUploadAddressScreen() {
+  // 横屏静态中文 RLE + 运行时叠画完整 URL（避免 24px 点阵放大缺笔）
+  epd::setLogicalSize(epd::kLandscapeW, epd::kLandscapeH);
+  epd::clear(epd::YELLOW);
+  epd::drawImageRle(kLanUploadScreenRle, kLanUploadScreenRleLen);
+
+  String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("--");
+  String url = "http://" + ip + "/upload";
+  epd::drawText(LAN_URL_X, LAN_URL_Y, url.c_str(), LAN_URL_COLOR, LAN_URL_SCALE);
+
+  bool ok = flushWithCooldown("传图地址");
+  frame_store::applyStoredScreenSize();
+  g_uploadAddrShown = true;
+  Serial.printf("[wifi_setup] 传图地址屏 %s ok=%d (横屏RLE)\n", url.c_str(), (int)ok);
+  return ok;
+}
+
+bool toggleUploadAddressScreen() {
+  if (g_uploadAddrShown) {
+    g_uploadAddrShown = false;
+    return false;  // 调用方恢复 /last.bin
+  }
+  return showUploadAddressScreen();
+}
+
+bool lanBusy() { return g_lanBusy || g_lanApplyPending; }
+
+void requestLanCancel() { g_lanCancel = true; }
+
+int pollLanUploadApply(LanActivityHook hook) {
+  if (!g_lanApplyPending || !g_uploadBuf) return 0;
+  g_lanApplyPending = false;
+  g_lanBusy = true;
+  g_lanCancel = false;
+
+  const size_t len = epd::frameBytes();
+  if (hook) hook();
+  bool ok = epd::drawImageRaw(g_uploadBuf, len);
+  if (ok && !g_lanCancel) {
+    if (hook) {
+      epd::setBusyPollHook(hook);
+    }
+    ok = flushWithCooldown("局域网传图");
+    epd::setBusyPollHook(nullptr);
+  }
+  if (ok && !g_lanCancel) {
+    uint32_t crc = crc32Buf(g_uploadBuf, len);
+    frame_store::saveLastFrame(g_uploadBuf, len, crc);
+    // 置 0，切回小程序模式长按 sync 时可重新拉正式帧
+    frame_store::setContentVersion(0);
+    uint32_t now = (uint32_t)time(nullptr);
+    if (now < 1700000000) now = millis() / 1000;
+    frame_store::setLastRefreshTs(now);
+    g_uploadAddrShown = false;
+    Serial.printf("[wifi_setup] 局域网帧已刷屏 crc=%08x\n", crc);
+    g_lanBusy = false;
+    return 1;
+  }
+  Serial.println("[wifi_setup] 局域网刷屏失败或取消");
+  g_lanBusy = false;
+  return -1;
 }
 
 void loop() {

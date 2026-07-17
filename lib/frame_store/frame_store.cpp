@@ -17,7 +17,14 @@ constexpr const char* kKeyBound = "bound";
 constexpr const char* kKeyRefresh = "lastRefreshTs";
 constexpr const char* kKeySsid = "wifiSsid";
 constexpr const char* kKeyPass = "wifiPass";
+constexpr const char* kKeyScreenW = "screenW";
+constexpr const char* kKeyScreenH = "screenH";
 constexpr const char* kFramePath = "/last.bin";
+
+bool isAllowedSize(int w, int h) {
+  return (w == epd::kPortraitW && h == epd::kPortraitH) ||
+         (w == epd::kLandscapeW && h == epd::kLandscapeH);
+}
 
 // 每次读写开关 NVS，避免与 wifi_setup 长期占用的 Preferences 冲突
 class Nvs {
@@ -107,6 +114,47 @@ void setLastRefreshTs(uint32_t ts) {
   if (n.ok()) n->putUInt(kKeyRefresh, ts);
 }
 
+int screenWidth() {
+  Nvs n(true);
+  if (!n.ok()) return epd::kPortraitW;
+  return (int)n->getUShort(kKeyScreenW, epd::kPortraitW);
+}
+
+int screenHeight() {
+  Nvs n(true);
+  if (!n.ok()) return epd::kPortraitH;
+  return (int)n->getUShort(kKeyScreenH, epd::kPortraitH);
+}
+
+bool setScreenSize(int w, int h) {
+  if (!isAllowedSize(w, h)) return false;
+  const int oldW = screenWidth();
+  const int oldH = screenHeight();
+  {
+    Nvs n(false);
+    if (!n.ok()) return false;
+    n->putUShort(kKeyScreenW, (uint16_t)w);
+    n->putUShort(kKeyScreenH, (uint16_t)h);
+  }
+  if (!epd::setLogicalSize(w, h)) return false;
+  // 方向变了：旧 /last.bin 行跨度不同，本地重刷会花屏
+  if (oldW != w || oldH != h) {
+    clearLastFrame();
+    Serial.printf("[frame_store] 屏参 %dx%d → %dx%d，已清本地帧缓存\n", oldW, oldH, w, h);
+  }
+  return true;
+}
+
+void applyStoredScreenSize() {
+  int w = screenWidth();
+  int h = screenHeight();
+  if (!isAllowedSize(w, h)) {
+    w = epd::kPortraitW;
+    h = epd::kPortraitH;
+  }
+  epd::setLogicalSize(w, h);
+}
+
 bool saveLastFrame(const uint8_t* data, size_t len, uint32_t crc) {
   if (!data || len != epd::frameBytes()) return false;
   File f = LittleFS.open(kFramePath, "w");
@@ -172,6 +220,14 @@ void factoryReset() {
   setBound(false);
   setLastRefreshTs(0);
   clearLastFrame();
+  {
+    Nvs n(false);
+    if (n.ok()) {
+      n->remove(kKeyScreenW);
+      n->remove(kKeyScreenH);
+    }
+  }
+  epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
 }
 
 }  // namespace frame_store
