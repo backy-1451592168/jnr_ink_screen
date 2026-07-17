@@ -624,7 +624,7 @@ void handleFinish() {
 
 void handleUploadGet() {
   if (!g_lanUploadEnabled) {
-    server.send(404, "text/plain; charset=utf-8", "请先短按模式键切到局域网传图（青灯）");
+    server.send(404, "text/plain; charset=utf-8", "请先双击模式键切到局域网传图（青灯）");
     return;
   }
   server.sendHeader("Cache-Control", "no-store");

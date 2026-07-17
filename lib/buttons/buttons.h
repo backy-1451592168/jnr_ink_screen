@@ -7,7 +7,7 @@ namespace buttons {
 
 enum class Event : uint8_t {
   None = 0,
-  ModeShort,
+  ModeDouble,     // 双击：绿↔青切换（防误触；单击无效）
   ActionShort,    // 单击（未绑定 sync 等）
   ActionDouble,   // 双击：本地重刷缓存（防误触）
   ActionLong,

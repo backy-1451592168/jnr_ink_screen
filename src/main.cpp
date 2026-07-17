@@ -200,7 +200,7 @@ static void handleButtons() {
   bool unbound = !frame_store::bound();
 
   switch (ev) {
-    case buttons::Event::ModeShort:
+    case buttons::Event::ModeDouble:
       if (unbound || g_provisioning) break;
       {
         auto m = frame_store::workMode();

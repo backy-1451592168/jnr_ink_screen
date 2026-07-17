@@ -21,7 +21,9 @@ constexpr uint32_t kDoubleClickMs = 400;  // 两次短按间隔上限
 constexpr uint32_t kReconfigMs = 3000;
 constexpr uint32_t kFactoryMs = 8000;
 
-// 执行键：短按后等窗口，超时报单击，窗口内再短按报双击
+// 短按后等窗口：窗口内再短按报双击；模式键超时丢弃（单击无效），执行键超时报单击
+bool g_modeClickPending = false;
+uint32_t g_modeClickAt = 0;
 bool g_actionClickPending = false;
 uint32_t g_actionClickAt = 0;
 
@@ -100,9 +102,21 @@ Event poll(bool busy) {
     }
   }
 
-  uint32_t modeHeld = updateRelease(g_mode);
-  if (modeHeld > 0 && modeHeld < kShortMaxMs) {
-    return Event::ModeShort;
+  // 模式键：仅双击切换；单击超时丢弃（防误触）
+  {
+    uint32_t modeHeld = updateRelease(g_mode);
+    if (modeHeld > 0 && modeHeld < kShortMaxMs) {
+      uint32_t now = millis();
+      if (g_modeClickPending && (now - g_modeClickAt) <= kDoubleClickMs) {
+        g_modeClickPending = false;
+        return Event::ModeDouble;
+      }
+      g_modeClickPending = true;
+      g_modeClickAt = now;
+    }
+  }
+  if (g_modeClickPending && (millis() - g_modeClickAt) > kDoubleClickMs) {
+    g_modeClickPending = false;
   }
 
   // 忙时：按下执行键即取消（边沿）；丢弃未决单击
