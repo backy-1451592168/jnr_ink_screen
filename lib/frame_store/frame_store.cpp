@@ -14,6 +14,7 @@ constexpr const char* kKeyMode = "workMode";
 constexpr const char* kKeyVer = "contentVersion";
 constexpr const char* kKeyCrc = "frameCrc";
 constexpr const char* kKeyBound = "bound";
+constexpr const char* kKeySecret = "deviceSecret";
 constexpr const char* kKeyRefresh = "lastRefreshTs";
 constexpr const char* kKeySsid = "wifiSsid";
 constexpr const char* kKeyPass = "wifiPass";
@@ -102,6 +103,23 @@ bool bound() {
 void setBound(bool v) {
   Nvs n(false);
   if (n.ok()) n->putUChar(kKeyBound, v ? 1 : 0);
+}
+
+String deviceSecret() {
+  Nvs n(true);
+  if (!n.ok()) return "";
+  return n->getString(kKeySecret, "");
+}
+
+void setDeviceSecret(const String& secret) {
+  Nvs n(false);
+  if (!n.ok()) return;
+  if (secret.isEmpty()) n->remove(kKeySecret);
+  else n->putString(kKeySecret, secret);
+}
+
+void clearDeviceSecret() {
+  setDeviceSecret("");
 }
 
 uint32_t lastRefreshTs() {
@@ -218,6 +236,7 @@ void factoryReset() {
   setWorkMode(MODE_MINIPROG);
   setContentVersion(0);
   setBound(false);
+  clearDeviceSecret();
   setLastRefreshTs(0);
   clearLastFrame();
   {

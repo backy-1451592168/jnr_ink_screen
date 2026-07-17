@@ -91,6 +91,13 @@ void prepareClient(WiFiClientSecure& client) {
   client.setTimeout(20);
 }
 
+void applyDeviceSecretHeader(HTTPClient& http) {
+  String secret = frame_store::deviceSecret();
+  if (!secret.isEmpty()) {
+    http.addHeader("X-Ink-Device-Secret", secret);
+  }
+}
+
 bool httpGet(const String& url, String& outBody, int& outCode) {
   outBody = "";
   outCode = -1;
@@ -100,6 +107,7 @@ bool httpGet(const String& url, String& outBody, int& outCode) {
     HTTPClient http;
     http.setTimeout(20000);
     if (!http.begin(client, url)) return false;
+    applyDeviceSecretHeader(http);
     outCode = http.GET();
     if (outCode > 0) outBody = http.getString();
     http.end();
@@ -108,6 +116,7 @@ bool httpGet(const String& url, String& outBody, int& outCode) {
   HTTPClient http;
   http.setTimeout(20000);
   if (!http.begin(url)) return false;
+  applyDeviceSecretHeader(http);
   outCode = http.GET();
   if (outCode > 0) outBody = http.getString();
   http.end();
@@ -116,6 +125,7 @@ bool httpGet(const String& url, String& outBody, int& outCode) {
 
 bool readHttpBinaryBody(HTTPClient& http, uint8_t* dest, size_t maxLen, size_t& got) {
   got = 0;
+  applyDeviceSecretHeader(http);
   int code = http.GET();
   if (code != 200) {
     http.end();
@@ -166,6 +176,7 @@ bool httpPostJson(const String& url, const String& json) {
     http.setTimeout(15000);
     if (!http.begin(client, url)) return false;
     http.addHeader("Content-Type", "application/json");
+    applyDeviceSecretHeader(http);
     int code = http.POST(json);
     http.end();
     return code == 200;
@@ -174,6 +185,7 @@ bool httpPostJson(const String& url, const String& json) {
   http.setTimeout(15000);
   if (!http.begin(url)) return false;
   http.addHeader("Content-Type", "application/json");
+  applyDeviceSecretHeader(http);
   int code = http.POST(json);
   http.end();
   return code == 200;
@@ -230,7 +242,18 @@ Result syncAgainstBase(const String& base) {
   String body;
   int code = 0;
   Serial.printf("[ink_sync] GET %s\n", url.c_str());
-  if (!httpGet(url, body, code) || code != 200) {
+  if (!httpGet(url, body, code)) {
+    Serial.printf("[ink_sync] sync HTTP 失败 code=%d\n", code);
+    return Result::Failed;
+  }
+  // 凭证无效：清本地 secret（解绑后下次可 bootstrap；仍绑定时需先小程序解绑）
+  if (code == 401 || body.indexOf("\"state\":401") >= 0 ||
+      body.indexOf("\"state\": 401") >= 0) {
+    Serial.println("[ink_sync] 设备凭证无效，清除本地 secret");
+    frame_store::clearDeviceSecret();
+    return Result::Failed;
+  }
+  if (code != 200) {
     Serial.printf("[ink_sync] sync HTTP 失败 code=%d\n", code);
     return Result::Failed;
   }
@@ -245,6 +268,13 @@ Result syncAgainstBase(const String& base) {
       int e = body.indexOf('"', t);
       type = body.substring(t, e);
     }
+  }
+
+  // 首次 / 解绑后 bootstrap：服务端下发 deviceSecret，写入 NVS
+  String issued = jsonStr(body, "deviceSecret");
+  if (!issued.isEmpty()) {
+    frame_store::setDeviceSecret(issued);
+    Serial.println("[ink_sync] 已保存 deviceSecret");
   }
 
   if (type == "sync_ok") {

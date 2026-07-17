@@ -24,6 +24,11 @@ void setFrameCrc(uint32_t crc);
 bool bound();
 void setBound(bool v);
 
+// 云端签发的设备凭证（sync 响应 deviceSecret；请求头 X-Ink-Device-Secret）
+String deviceSecret();
+void setDeviceSecret(const String& secret);
+void clearDeviceSecret();
+
 uint32_t lastRefreshTs();
 void setLastRefreshTs(uint32_t ts);
 
