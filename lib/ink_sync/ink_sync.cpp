@@ -213,6 +213,8 @@ void markRefreshed() {
 bool applyFrame(const uint8_t* buf, size_t len, uint32_t crc, uint32_t version, bool isBound) {
   if (!epd::drawImageRaw(buf, len)) return false;
   tickActivity();
+  // 全刷波形无法中断；取消发生在写屏前则跳过 flush，避免白等十几秒
+  if (g_cancel) return false;
   if (!epd::flush()) return false;
   frame_store::saveLastFrame(buf, len, crc);
   frame_store::setContentVersion(version);
@@ -426,10 +428,17 @@ Result refreshLocal(bool force) {
   }
   if (EPD_DEBOUNCE_MS > 0) delay(50);  // 本地重刷不做长防抖
   tickActivity();
-  bool ok = epd::drawImageRaw(buf, len) && epd::flush();
+  if (g_cancel) {
+    free(buf);
+    g_busy = false;
+    return Result::Cancelled;
+  }
+  bool ok = epd::drawImageRaw(buf, len);
+  if (ok && !g_cancel) ok = epd::flush();
   free(buf);
   if (ok) markRefreshed();
   g_busy = false;
+  if (!ok && g_cancel) return Result::Cancelled;
   return ok ? Result::OkUpdated : Result::Failed;
 }
 

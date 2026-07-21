@@ -35,7 +35,7 @@ bool lanUploadEnabled();
 // 墨屏显示传图地址；再调一次则恢复 /last.bin（由返回值区分）。
 // 返回 true=已显示地址页；false=已请求恢复缓存（调用方刷屏）。
 bool toggleUploadAddressScreen();
-// 强制刷出传图地址页（切入局域网模式时用，不走 toggle 关掉逻辑）。
+// 强制刷出传图地址页（执行键长按等；不走 toggle 关掉逻辑）。
 bool showUploadAddressScreen();
 bool uploadAddressVisible();
 

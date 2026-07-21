@@ -61,6 +61,11 @@ bool begin() {
     Serial.println("[frame_store] LittleFS 挂载失败");
     return false;
   }
+  // 首次上电创建 NVS 命名空间，避免只读 open 刷 Preferences NOT_FOUND
+  {
+    Preferences p;
+    if (p.begin(kNvs, false)) p.end();
+  }
   return true;
 }
 

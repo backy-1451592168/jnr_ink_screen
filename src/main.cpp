@@ -73,9 +73,18 @@ static void ledPurpleBreatheTick() {
   led(bri, 0, bri);
 }
 
+// 忙时主循环进不来：在 hook 里扫执行键，下载阶段可取消（全刷波形无法中断）
+static void busyTick() {
+  ledPurpleBreatheTick();
+  if (buttons::poll(true) == buttons::Event::ActionCancel) {
+    ink_sync::requestCancel();
+    wifi_setup::requestLanCancel();
+  }
+}
+
 static void beginRenderLed() {
-  ink_sync::setActivityHook(ledPurpleBreatheTick);
-  epd::setBusyPollHook(ledPurpleBreatheTick);
+  ink_sync::setActivityHook(busyTick);
+  epd::setBusyPollHook(busyTick);
 }
 
 static void endRenderLed() {
@@ -211,10 +220,7 @@ static void handleButtons() {
         ledModeIdle();
         Serial.printf("[main] workMode=%d lanUpload=%d\n", (int)next,
                       (int)(next == frame_store::MODE_LAN));
-        // 切入局域网传图时直接刷出地址，免再长按
-        if (next == frame_store::MODE_LAN) {
-          wifi_setup::showUploadAddressScreen();
-        }
+        // 只改 LED；传图地址仍用执行键长按刷出，避免无谓全刷
       }
       break;
 
@@ -238,12 +244,13 @@ static void handleButtons() {
       if (frame_store::workMode() == frame_store::MODE_MINIPROG ||
           frame_store::workMode() == frame_store::MODE_LAN) {
         beginRenderLed();
-        auto r = ink_sync::refreshLocal();
+        // 用户主动重刷：忽略最小间隔（间隔只约束自动路径）
+        auto r = ink_sync::refreshLocal(true);
         endRenderLed();
         if (r == ink_sync::Result::OkUpdated) {
           ledModeIdle();
         } else if (r == ink_sync::Result::Failed) {
-          // 间隔未到或无缓存：闪一下提示
+          // 无缓存等：闪一下提示
           ledFlashModeFast(false);
           delay(80);
           ledFlashModeFast(true);
@@ -373,7 +380,21 @@ void setup() {
   }
 
   g_provisioning = true;
+  // 刷配网屏期间 setup() 未返回，loop 橙闪还没跑；BUSY 等待时闪橙，避免一直停在开机黄灯
+  led(60, 26, 0);
+  epd::setBusyPollHook([]() {
+    static uint32_t t = 0;
+    static bool on = false;
+    if (millis() - t > 400) {
+      t = millis();
+      on = !on;
+      if (on) led(60, 26, 0);
+      else led(0, 0, 0);
+    }
+  });
   wifi_setup::startAP();
+  epd::setBusyPollHook(nullptr);
+  led(60, 26, 0);
 }
 
 void loop() {
@@ -401,7 +422,7 @@ void loop() {
   }
 
   if (g_localAdmin) {
-    int lanR = wifi_setup::pollLanUploadApply(ledPurpleBreatheTick);
+    int lanR = wifi_setup::pollLanUploadApply(busyTick);
     if (lanR == 1) ledModeIdle();
     else if (lanR < 0) ledFail();
     scheduleSync();

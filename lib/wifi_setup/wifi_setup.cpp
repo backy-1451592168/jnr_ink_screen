@@ -77,7 +77,8 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="format-detection" content="telephone=no">
 <title>设备配网</title>
 <style>
   *{box-sizing:border-box}
@@ -87,103 +88,190 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   .sub{color:#888;font-size:13px;margin-bottom:18px}
   .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px}
   label{font-size:13px;color:#555;display:block;margin-bottom:6px}
-  input[type="text"],input[type="password"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#fff;-webkit-user-select:text;user-select:text;-webkit-appearance:none}
+  input[type="text"],input[type="password"],input[type="search"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#fff;-webkit-user-select:text!important;user-select:text!important;-webkit-appearance:none;appearance:none;touch-action:manipulation}
   input:focus{border-color:#3b82f6}
+  #ssid{background:#f5f7fa;color:#333;cursor:default;-webkit-user-select:none;user-select:none}
   .pass-wrap{position:relative}
   .pass-wrap input{padding-right:48px}
-  .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:transparent;color:#666;font-size:13px;padding:0;margin:0;cursor:pointer}
+  .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:transparent;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .eye svg{width:22px;height:22px;display:block;fill:#2c2c2c}
+  .eye .ico-on{display:none}
+  .eye.is-show .ico-on{display:block}
+  .eye.is-show .ico-off{display:none}
   button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
   button:active{background:#2563eb}
   button:disabled{opacity:.6}
   button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6;margin-top:8px}
   .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
-  .list{max-height:240px;overflow-y:auto;border:1px solid #eef0f4;border-radius:8px;margin-top:8px}
+  .list{max-height:240px;overflow-y:auto;border:1px solid #eef0f4;border-radius:8px;margin-top:8px;-webkit-overflow-scrolling:touch}
   .item{padding:10px 12px;border-bottom:1px solid #f0f2f6;display:flex;justify-content:space-between;align-items:center;cursor:pointer}
   .item:last-child{border-bottom:0}
   .item.sel{background:#eaf2ff}
-  .rssi{font-size:12px;color:#888}
-  .tip{font-size:12px;color:#888;margin-top:6px}
+  .rssi{font-size:12px;color:#888;flex-shrink:0;margin-left:8px}
+  .tip{font-size:12px;color:#888;margin-top:6px;line-height:1.5}
   .tip.ok{color:#16a34a}
   .tip.err,.item.err{color:#dc2626}
+  .tip.warn{color:#b45309}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99}
   .mask[hidden]{display:none}
   .mask-box{background:#fff;border-radius:12px;padding:28px 24px;max-width:280px;text-align:center;font-size:15px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.18)}
   .spin{width:28px;height:28px;margin:0 auto 14px;border:3px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  #setupPanel[hidden],#okPanel[hidden]{display:none!important}
+  .ok-title{font-size:18px;font-weight:600;color:#16a34a;margin:0 0 8px}
+  .ok-link{display:block;margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;color:#2563eb;word-break:break-all;font-size:14px;text-decoration:none}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>设备配网</h1>
-  <div class="sub">选择 WiFi 并输入密码，连接成功后进入设备信息页</div>
-  <div class="card">
-    <div class="row"><label style="margin:0">附近的 WiFi</label><button type="button" class="ghost" id="btnScan" style="margin:0;width:auto;padding:8px 14px">刷新</button></div>
-    <div class="list" id="list"><div class="item">点击「刷新」扫描附近 WiFi</div></div>
-  </div>
-  <div class="card">
-    <label for="ssid">WiFi 名称 (SSID)</label>
-    <input id="ssid" type="text" name="ssid" inputmode="text" enterkeyhint="next" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="可手动输入，或点上方列表填入">
-    <label for="pass" style="margin-top:12px">密码</label>
-    <div class="pass-wrap">
-      <input id="pass" type="password" name="pass" inputmode="text" enterkeyhint="done" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="留空表示开放网络">
-      <button type="button" class="eye" id="btnEye" aria-label="显示或隐藏密码">显示</button>
+  <div class="sub" id="sub">点选家里 WiFi，再输入密码。名称不可手改，进页会自动扫描。</div>
+
+  <div id="setupPanel">
+    <div class="card">
+      <div class="row"><label style="margin:0">附近的 WiFi</label><button type="button" class="ghost" id="btnScan" style="margin:0;width:auto;padding:8px 14px">刷新</button></div>
+      <div class="list" id="list"><div class="item">正在扫描附近 WiFi...</div></div>
     </div>
-    <button type="button" id="btnSave">保存并连接</button>
-    <div class="tip" id="tip"></div>
+    <div class="card">
+      <form id="wifiForm" action="/save" method="POST" autocomplete="off">
+        <label for="ssid">WiFi 名称 (SSID)</label>
+        <input id="ssid" type="text" name="ssid" readonly tabindex="-1" autocomplete="off" placeholder="请从上方列表点选">
+        <label for="pass" style="margin-top:12px">密码</label>
+        <div class="pass-wrap">
+          <input id="pass" type="password" name="pass" inputmode="text" enterkeyhint="done" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" readonly placeholder="留空表示开放网络">
+          <button type="button" class="eye" id="btnEye" aria-label="显示密码">
+            <svg class="ico-on" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M512 298.666667c-162.133333 0-285.866667 68.266667-375.466667 213.333333 89.6 145.066667 213.333333 213.333333 375.466667 213.333333s285.866667-68.266667 375.466667-213.333333c-89.6-145.066667-213.333333-213.333333-375.466667-213.333333z m0 469.333333c-183.466667 0-328.533333-85.333333-426.666667-256 98.133333-170.666667 243.2-256 426.666667-256s328.533333 85.333333 426.666667 256c-98.133333 170.666667-243.2 256-426.666667 256z m0-170.666667c46.933333 0 85.333333-38.4 85.333333-85.333333s-38.4-85.333333-85.333333-85.333333-85.333333 38.4-85.333333 85.333333 38.4 85.333333 85.333333 85.333333z m0 42.666667c-72.533333 0-128-55.466667-128-128s55.466667-128 128-128 128 55.466667 128 128-55.466667 128-128 128z"></path></svg>
+            <svg class="ico-off" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M332.8 729.6l34.133333-34.133333c42.666667 12.8 93.866667 21.333333 145.066667 21.333333 162.133333 0 285.866667-68.266667 375.466667-213.333333-46.933333-72.533333-102.4-128-166.4-162.133334l29.866666-29.866666c72.533333 42.666667 132.266667 106.666667 183.466667 192-98.133333 170.666667-243.2 256-426.666667 256-59.733333 4.266667-119.466667-8.533333-174.933333-29.866667z m-115.2-64c-51.2-38.4-93.866667-93.866667-132.266667-157.866667 98.133333-170.666667 243.2-256 426.666667-256 38.4 0 76.8 4.266667 110.933333 12.8l-34.133333 34.133334c-25.6-4.266667-46.933333-4.266667-76.8-4.266667-162.133333 0-285.866667 68.266667-375.466667 213.333333 34.133333 51.2 72.533333 93.866667 115.2 128l-34.133333 29.866667z m230.4-46.933333l29.866667-29.866667c8.533333 4.266667 21.333333 4.266667 29.866666 4.266667 46.933333 0 85.333333-38.4 85.333334-85.333334 0-12.8 0-21.333333-4.266667-29.866666l29.866667-29.866667c12.8 17.066667 17.066667 38.4 17.066666 64 0 72.533333-55.466667 128-128 128-17.066667-4.266667-38.4-12.8-59.733333-21.333333zM384 499.2c4.266667-68.266667 55.466667-119.466667 123.733333-123.733333 0 4.266667-123.733333 123.733333-123.733333 123.733333zM733.866667 213.333333l29.866666 29.866667-512 512-34.133333-29.866667L733.866667 213.333333z"></path></svg>
+          </button>
+        </div>
+        <button type="submit" id="btnSave">保存并连接</button>
+      </form>
+      <div class="tip" id="tip"></div>
+    </div>
+    <div class="card"><button type="button" class="ghost" id="btnReset">忘记网络 / 重置</button></div>
   </div>
-  <div class="card"><button type="button" class="ghost" id="btnReset">忘记网络 / 重置</button></div>
+
+  <div id="okPanel" hidden>
+    <div class="card">
+      <div class="ok-title">相框已连上家里 WiFi</div>
+      <div class="tip ok" id="okMsg" style="margin:0"></div>
+      <div class="tip warn" style="margin-top:12px">请立刻把手机 WiFi 切回原来的家里网络（离开「DayIJoy-心选日」热点）。</div>
+      <div class="tip warn">切网后本页可能即将关闭或无法刷新，属正常现象。请先复制下方地址，再用浏览器打开继续设置。</div>
+      <a class="ok-link" id="adminLink" href="#" target="_blank" rel="noopener"></a>
+      <button type="button" id="btnCopy">复制管理页地址</button>
+      <button type="button" id="btnOpenLan">我已切回家里 WiFi，打开管理页</button>
+      <button type="button" class="ghost" id="btnStayAp">仍连热点，继续设置</button>
+      <div class="tip" id="okTip"></div>
+    </div>
+  </div>
+
   <div class="footer">DayIJoy · 心选日 · 设备配网</div>
 </div>
 <div class="mask" id="mask" hidden>
-  <div class="mask-box"><div class="spin"></div>请等待 WiFi 连接中...</div>
+  <div class="mask-box"><div class="spin"></div><div id="maskText">请等待 WiFi 连接中...</div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
 const list=$('list'),tip=$('tip'),mask=$('mask');
+let adminUrl='';
 function bars(r){if(r>=-55)return'●●●●';if(r>=-65)return'●●●○';if(r>=-75)return'●●○○';if(r>=-85)return'●○○○';return'○○○○';}
-function setLoading(on){mask.hidden=!on;$('btnSave').disabled=!!on;$('btnScan').disabled=!!on;}
+function setLoading(on,text){
+  mask.hidden=!on;
+  if(text)$('maskText').textContent=text;
+  $('btnSave').disabled=!!on;
+  $('btnScan').disabled=!!on;
+}
+function unlockPass(){
+  const p=$('pass');
+  p.removeAttribute('readonly');
+}
+$('pass').addEventListener('touchstart',unlockPass,{passive:true});
+$('pass').addEventListener('focus',unlockPass);
 async function scan(){
   list.innerHTML='<div class="item">扫描中...</div>';
   try{
     const j=await(await fetch('/scan')).json();
-    if(!j.length){list.innerHTML='<div class="item">未发现可用 WiFi</div>';return;}
+    if(!j.length){list.innerHTML='<div class="item">未发现可用 WiFi，请点「刷新」重试</div>';return;}
     list.innerHTML='';
     j.forEach(n=>{
+      if(!n.ssid)return;
       const div=document.createElement('div');div.className='item';
-      const name=document.createElement('span');name.textContent=(n.ssid||'(隐藏网络)')+(n.enc?' 🔒':'');
+      const name=document.createElement('span');name.textContent=n.ssid+(n.enc?' 🔒':'');
       const rssi=document.createElement('span');rssi.className='rssi';rssi.textContent=bars(n.rssi)+' '+n.rssi+'dBm';
       div.appendChild(name);div.appendChild(rssi);
-      div.onclick=()=>{document.querySelectorAll('.item').forEach(i=>i.classList.remove('sel'));div.classList.add('sel');$('ssid').value=n.ssid||'';$('pass').focus();};
+      div.onclick=()=>{
+        document.querySelectorAll('#list .item').forEach(i=>i.classList.remove('sel'));
+        div.classList.add('sel');
+        $('ssid').value=n.ssid;
+        unlockPass();
+        $('pass').focus();
+      };
       list.appendChild(div);
     });
-  }catch(e){list.innerHTML='<div class="item err">扫描失败，请重试</div>';}
+    if(!list.children.length){list.innerHTML='<div class="item">未发现可用 WiFi，请点「刷新」重试</div>';}
+  }catch(e){list.innerHTML='<div class="item err">扫描失败，请点「刷新」重试</div>';}
 }
-async function save(){
+function showConnected(j){
+  adminUrl=j.adminUrl||(j.ip?('http://'+j.ip+'/device'):'');
+  $('setupPanel').hidden=true;
+  $('okPanel').hidden=false;
+  $('sub').textContent='配网成功，请按提示切回家里 WiFi';
+  $('okMsg').textContent='已连接：'+(j.ssid||'')+'，IP='+(j.ip||'-');
+  const a=$('adminLink');
+  a.href=adminUrl||'#';
+  a.textContent=adminUrl||'(无局域网地址)';
+}
+async function save(ev){
+  if(ev)ev.preventDefault();
+  unlockPass();
   const ssid=$('ssid').value.trim();
-  if(!ssid){tip.textContent='请输入或选择 WiFi 名称';tip.className='tip err';return;}
+  if(!ssid){tip.textContent='请先在上方列表点选 WiFi';tip.className='tip err';return;}
   tip.textContent='';tip.className='tip';
-  setLoading(true);
+  setLoading(true,'请等待 WiFi 连接中...');
   try{
     const fd=new FormData();fd.append('ssid',ssid);fd.append('pass',$('pass').value);
     const r=await fetch('/save',{method:'POST',body:fd});
-    const t=await r.text();
-    if(!r.ok){setLoading(false);tip.textContent=t||'连接失败';tip.className='tip err';return;}
-    tip.textContent=t||'连接成功，正在跳转...';tip.className='tip ok';
-    location.href='/device';
-  }catch(e){setLoading(false);tip.textContent='提交失败：'+e;tip.className='tip err';}
+    const ct=r.headers.get('content-type')||'';
+    let j=null,t='';
+    if(ct.indexOf('json')>=0){j=await r.json();}else{t=await r.text();}
+    setLoading(false);
+    if(!r.ok){tip.textContent=(j&&j.message)||t||'连接失败';tip.className='tip err';return;}
+    if(!j){
+      const m=t.match(/IP=([\d.]+)/);
+      j={ssid:ssid,ip:m?m[1]:'',adminUrl:m?('http://'+m[1]+'/device'):''};
+    }
+    showConnected(j);
+  }catch(e){setLoading(false);tip.textContent='提交失败，请确认仍连着设备热点后重试';tip.className='tip err';}
 }
 async function reset(){
   if(!confirm('确定清空已保存的 WiFi 配置吗？'))return;
-  await fetch('/reset',{method:'POST'});
-  tip.textContent='已重置，设备即将重启...';tip.className='tip ok';
+  try{
+    await fetch('/reset',{method:'POST'});
+    tip.textContent='已重置，设备即将重启...';tip.className='tip ok';
+  }catch(e){tip.textContent='重置失败：'+e;tip.className='tip err';}
+}
+async function copyUrl(){
+  if(!adminUrl){$('okTip').textContent='暂无管理页地址';$('okTip').className='tip err';return;}
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(adminUrl);}
+    else{const ta=document.createElement('textarea');ta.value=adminUrl;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);}
+    $('okTip').textContent='已复制：'+adminUrl;$('okTip').className='tip ok';
+  }catch(e){$('okTip').textContent='复制失败，请长按上方蓝色地址手动复制';$('okTip').className='tip err';}
 }
 $('btnEye').onclick=()=>{
+  unlockPass();
   const p=$('pass');const show=p.type==='password';
   p.type=show?'text':'password';
-  $('btnEye').textContent=show?'隐藏':'显示';
+  $('btnEye').classList.toggle('is-show',show);
+  $('btnEye').setAttribute('aria-label',show?'隐藏密码':'显示密码');
 };
-$('btnScan').onclick=scan;$('btnSave').onclick=save;$('btnReset').onclick=reset;
+$('wifiForm').onsubmit=save;
+$('btnScan').onclick=scan;$('btnReset').onclick=reset;
+$('btnCopy').onclick=copyUrl;
+$('btnOpenLan').onclick=()=>{if(adminUrl)location.href=adminUrl;};
+$('btnStayAp').onclick=()=>{location.href='/device';};
+scan();
 </script>
 </body>
 </html>
@@ -224,12 +312,15 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
   .done-box a{color:#2563eb;word-break:break-all;font-size:14px}
   .done-actions{display:flex;gap:8px;margin-top:10px}
   .done-actions button{margin-top:0}
+  .banner{display:none;margin-bottom:14px;padding:12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;line-height:1.55;color:#92400e}
+  .banner.show{display:block}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>设备信息</h1>
   <div class="sub">查看本机网络信息，并设置小程序服务地址</div>
+  <div class="banner" id="apBanner">你仍连着设备热点。设置完后请点「完成并重启」，再把手机 WiFi 切回家里网络；热点断开后本页会失联，属正常。</div>
   <div class="card" id="info">
     <div class="row"><span class="k">状态</span><span class="v">加载中...</span></div>
   </div>
@@ -245,7 +336,7 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
     <button type="button" class="ok" id="btnFinish">完成并重启</button>
     <div class="tip" id="tip"></div>
     <div class="done-box" id="doneBox">
-      <div class="tip ok" style="margin:0 0 8px">设备即将重启。请先改连家里 WiFi，再用下方地址打开管理页：</div>
+      <div class="tip ok" style="margin:0 0 8px">设备即将重启，热点会关闭，本页可能马上失联。请先把手机切回家里 WiFi，再用下方地址打开管理页：</div>
       <a id="adminLink" href="#" target="_blank" rel="noopener"></a>
       <div class="done-actions">
         <button type="button" class="ghost" id="btnCopy">复制地址</button>
@@ -276,8 +367,16 @@ function apiForm(){
   fd.append('syncHour',$('syncHour').value);
   return fd;
 }
+function alreadyOnAdmin(url){
+  if(!url)return false;
+  try{
+    const u=new URL(url,location.href);
+    return u.hostname===location.hostname && location.hostname!=='192.168.8.1';
+  }catch(e){return false;}
+}
 function showAdminLink(url){
   adminUrl=url||'';
+  if(alreadyOnAdmin(adminUrl))return;
   const a=$('adminLink');
   a.href=adminUrl||'#';
   a.textContent=adminUrl||'(无局域网 IP)';
@@ -347,6 +446,7 @@ async function copyUrl(){
 $('btnSave').onclick=saveApi;$('btnFinish').onclick=finish;
 $('btnCopy').onclick=copyUrl;
 $('btnOpen').onclick=()=>{if(adminUrl)location.href=adminUrl;};
+if(location.hostname==='192.168.8.1'){$('apBanner').classList.add('show');}
 load();
 </script>
 </body>
@@ -423,14 +523,27 @@ void handleRoot() { server.send_P(200, "text/html; charset=utf-8", kIndexHtml); 
 
 void handleDevicePage() { server.send_P(200, "text/html; charset=utf-8", kDeviceHtml); }
 
-void handleCaptiveOk() {
-  server.sendHeader("Cache-Control", "no-cache");
-  server.send(204, "text/plain", "");
-}
-
 void handleCaptivePortal() {
+  // 一律跳配网页：勿对 generate_204 回 204，否则 Android 会以为已联网并关掉强制门户，输入框失效
   server.sendHeader("Location", "http://" + kApIp.toString() + "/", true);
   server.send(302, "text/plain", "");
+}
+
+String jsonEscape(const String& s) {
+  String o;
+  o.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    if (c == '\\' || c == '"') {
+      o += '\\';
+      o += c;
+    } else if (c == '\n') {
+      o += "\\n";
+    } else {
+      o += c;
+    }
+  }
+  return o;
 }
 
 void refreshScanCache(bool force = false) {
@@ -518,10 +631,12 @@ void handleSave() {
   }
 
   saveCurrentStaIp();
-  Serial.printf("[wifi_setup] STA 已连接 IP=%s\n", WiFi.localIP().toString().c_str());
-  // 先回包再刷屏（全刷 12–20s，否则浏览器会超时）
-  server.send(200, "text/plain; charset=utf-8",
-              "已连接：" + ssid + "，IP=" + WiFi.localIP().toString());
+  String ip = WiFi.localIP().toString();
+  Serial.printf("[wifi_setup] STA 已连接 IP=%s\n", ip.c_str());
+  // JSON 回包：前端提示切回家里 WiFi；先回包再刷屏（全刷 12–20s）
+  String body = "{\"ok\":true,\"ssid\":\"" + jsonEscape(ssid) + "\",\"ip\":\"" +
+                jsonEscape(ip) + "\",\"adminUrl\":\"http://" + ip + "/device\"}";
+  server.send(200, "application/json; charset=utf-8", body);
   showReadyScreen();
 }
 
@@ -535,23 +650,6 @@ void handleReset() {
   server.send(200, "text/plain; charset=utf-8", "已清空 WiFi，设备即将重启...");
   delay(1000);
   ESP.restart();
-}
-
-String jsonEscape(const String& s) {
-  String o;
-  o.reserve(s.length() + 8);
-  for (size_t i = 0; i < s.length(); ++i) {
-    char c = s[i];
-    if (c == '\\' || c == '"') {
-      o += '\\';
-      o += c;
-    } else if (c == '\n') {
-      o += "\\n";
-    } else {
-      o += c;
-    }
-  }
-  return o;
 }
 
 void handleInfo() {
@@ -759,9 +857,9 @@ void setupHttpAp() {
   server.on("/save", HTTP_POST, handleSave);
   server.on("/reset", HTTP_POST, handleReset);
   registerCommonRoutes();
-  // Captive Portal 探测
-  server.on("/generate_204", HTTP_GET, handleCaptiveOk);
-  server.on("/gen_204", HTTP_GET, handleCaptiveOk);
+  // Captive Portal 探测：全部跳配网页，避免系统误判「已联网」关掉门户
+  server.on("/generate_204", HTTP_GET, handleCaptivePortal);
+  server.on("/gen_204", HTTP_GET, handleCaptivePortal);
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
   server.on("/library/test/success.html", HTTP_GET, handleCaptivePortal);
   server.on("/connecttest.txt", HTTP_GET, handleCaptivePortal);
@@ -818,8 +916,9 @@ void showConfigScreen() {
   String mac = WiFi.macAddress();
   epd::drawText(CFG_MAC_X, CFG_MAC_Y, mac.c_str(), CFG_MAC_COLOR, CFG_MAC_SCALE);
 
-  Serial.printf("[wifi_setup] 刷出配网画面 MAC=%s\n", mac.c_str());
-  flushWithCooldown("配网画面");
+  Serial.printf("[wifi_setup] 开始刷配网画面 MAC=%s（全刷约 12–20s）\n", mac.c_str());
+  bool ok = flushWithCooldown("配网画面");
+  Serial.printf("[wifi_setup] 配网画面刷屏结束 ok=%d\n", (int)ok);
 }
 
 void showReadyScreen() {

@@ -8,10 +8,10 @@ namespace buttons {
 enum class Event : uint8_t {
   None = 0,
   ModeDouble,     // 双击：绿↔青切换（防误触；单击无效）
-  ActionShort,    // 单击（未绑定 sync 等）
+  ActionShort,    // 单击立刻上报（未绑定 sync；已绑定忽略）
   ActionDouble,   // 双击：本地重刷缓存（防误触）
   ActionLong,
-  ActionCancel,   // 忙时再按执行键
+  ActionCancel,   // 忙时再按执行键（下载阶段可取消）
   SystemReconfig, // 长按 3s
   SystemFactory,  // 超长按 8s
 };

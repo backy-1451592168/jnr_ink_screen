@@ -34,7 +34,7 @@ struct Btn {
   uint32_t lastChange;
   uint32_t pressStart;
   bool pressed;
-  bool longFired;  // 执行键长按已触发（松手忽略）
+  bool longFired;  // 长按已到点触发（松手忽略）：执行键 2s / 系统键 8s
   uint8_t stage;   // 保留字段（未用）
 };
 
@@ -81,7 +81,7 @@ void begin() {
 }
 
 Event poll(bool busy) {
-  // 系统键：松手时按时长判定（避免 3s 重配抢在 8s 出厂之前重启）
+  // 系统键：8s 出厂到点即执行；3s 重配仍松手判定（避免未到 8s 就进重配）
   {
     bool raw = digitalRead(g_system.pin) == LOW;
     uint32_t now = millis();
@@ -93,11 +93,18 @@ Event poll(bool busy) {
       if (raw && !g_system.pressed) {
         g_system.pressed = true;
         g_system.pressStart = now;
+        g_system.longFired = false;
+      } else if (raw && g_system.pressed) {
+        if (!g_system.longFired && (now - g_system.pressStart) >= kFactoryMs) {
+          g_system.longFired = true;
+          return Event::SystemFactory;
+        }
       } else if (!raw && g_system.pressed) {
         uint32_t held = now - g_system.pressStart;
+        bool wasFactory = g_system.longFired;
         g_system.pressed = false;
-        if (held >= kFactoryMs) return Event::SystemFactory;
-        if (held >= kReconfigMs) return Event::SystemReconfig;
+        g_system.longFired = false;
+        if (!wasFactory && held >= kReconfigMs) return Event::SystemReconfig;
       }
     }
   }
@@ -162,13 +169,14 @@ Event poll(bool busy) {
         g_action.pressed = false;
         g_action.longFired = false;
         if (!wasLong) {
-          // 短按：窗口内第二次 → 双击；否则挂起等超时再报单击
+          // 短按：立刻报单击（未绑定可马上 sync）；窗口内再按仍可升格为双击
           if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
             g_actionClickPending = false;
             return Event::ActionDouble;
           }
           g_actionClickPending = true;
           g_actionClickAt = now;
+          return Event::ActionShort;
         }
       }
     }
@@ -176,7 +184,6 @@ Event poll(bool busy) {
 
   if (g_actionClickPending && (millis() - g_actionClickAt) > kDoubleClickMs) {
     g_actionClickPending = false;
-    return Event::ActionShort;
   }
 
   return Event::None;
