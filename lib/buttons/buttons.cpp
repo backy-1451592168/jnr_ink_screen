@@ -189,4 +189,12 @@ Event poll(bool busy) {
   return Event::None;
 }
 
+uint8_t systemHoldLevel() {
+  if (!g_system.pressed || g_system.longFired) return 0;
+  uint32_t held = millis() - g_system.pressStart;
+  if (held >= 6000) return 3;
+  if (held >= kReconfigMs) return 2;
+  return 1;
+}
+
 }  // namespace buttons

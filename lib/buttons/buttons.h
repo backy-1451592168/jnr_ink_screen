@@ -20,4 +20,8 @@ void begin();
 // 主循环调用；busy=true 时执行键短按变为取消
 Event poll(bool busy);
 
+// 系统键按住阶段（供主循环灯提示；不产生事件）：
+// 0=未按，1=按住未满 3s，2=已满 3s（松手即重配），3=已满 6s（即将出厂）
+uint8_t systemHoldLevel();
+
 }  // namespace buttons

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成墨屏 ASCII 12×24 点阵（URL / MAC 等叠画用）。
+"""生成墨屏 ASCII 12×24 + 状态屏 CJK 24×24 点阵。
 
 与配网页相同：FreeType → 1-bit（无灰边），基线对齐，格内水平居中。
-中文请用 scripts/gen_lan_upload_screen.py 整页预渲染，不要用小点阵放大。
+整页中文 UI（传图地址等）仍用 scripts/gen_lan_upload_screen.py 预渲染 RLE。
 
 用法：
   cd jnr_ink_screen
@@ -30,12 +30,20 @@ ASCII_FONT_CANDIDATES = [
 ]
 
 OUT_ASCII = ROOT / "lib" / "epd" / "font12x24.h"
-# 保留空中文表，避免旧固件引用断裂；地址页中文已改 RLE
 OUT_CJK = ROOT / "lib" / "epd" / "font_cjk24.h"
 
 ASCII_W, ASCII_H = 12, 24
 ASCII_PX = 15
 ASCII_BASELINE = 19
+
+CJK_W, CJK_H = 24, 24
+CJK_PX = 20
+CJK_BASELINE = 20
+# 开机/WiFi/同步失败等状态屏用字（须按码点排序写入）
+STATUS_CJK = (
+    "无缓存画面时初始化中连接重试失败进入配网同步请检查服务地址长按执行键"
+    "完成局域请用浏览器打开设置后点出厂重置先小程序解绑"
+)
 
 
 def load_font(path: str, size: int, index: int = 0) -> ImageFont.FreeTypeFont:
@@ -127,27 +135,62 @@ def emit_ascii(font_path: str, font_index: int) -> dict[str, Image.Image]:
     return glyphs
 
 
-def emit_empty_cjk() -> None:
+def render_cjk_glyph(ch: str, font_path: str) -> Image.Image:
+    """24×24 中文：超采样 + 低阈值，格内水平居中、基线对齐。"""
+    cell = Image.new("1", (CJK_W, CJK_H), 0)
+    ss = 3
+    big = Image.new("L", (CJK_W * ss, CJK_H * ss), 0)
+    font_big = load_font(font_path, CJK_PX * ss, 0)
+    bbox = font_big.getbbox(ch)
+    gw = max(1, bbox[2] - bbox[0])
+    x = (CJK_W * ss - gw) // 2 - bbox[0]
+    ImageDraw.Draw(big).text(
+        (x, CJK_BASELINE * ss), ch, font=font_big, fill=255, anchor="ls"
+    )
+    bw = big.point(lambda p: 255 if p >= 64 else 0, mode="1")
+    sp, dp = bw.load(), cell.load()
+    for cy in range(CJK_H):
+        for cx in range(CJK_W):
+            ink = False
+            for yy in range(cy * ss, cy * ss + ss):
+                for xx in range(cx * ss, cx * ss + ss):
+                    if sp[xx, yy]:
+                        ink = True
+                        break
+                if ink:
+                    break
+            if ink:
+                dp[cx, cy] = 1
+    return cell
+
+
+def emit_cjk_subset(font_path: str) -> None:
+    chars = sorted(set(STATUS_CJK), key=lambda c: ord(c))
     lines = [
         "// 自动生成，请勿手改。源：scripts/gen_epd_font.py",
-        "// 中文请用 gen_lan_upload_screen.py 整页 RLE；此表仅占位。",
+        f"// 状态屏 CJK 子集 {CJK_W}x{CJK_H}，共 {len(chars)} 字。整页中文仍用 RLE。",
         "#pragma once",
         "#include <Arduino.h>",
         "",
-        "#define FONT_CJK_W 24",
-        "#define FONT_CJK_H 24",
-        "#define FONT_CJK_BYTES_PER_GLYPH 72",
-        "#define FONT_CJK_COUNT 0",
+        f"#define FONT_CJK_W {CJK_W}",
+        f"#define FONT_CJK_H {CJK_H}",
+        f"#define FONT_CJK_BYTES_PER_GLYPH {(CJK_W + 7) // 8 * CJK_H}",
+        f"#define FONT_CJK_COUNT {len(chars)}",
         "",
         "struct FontCjkGlyph {",
         "  uint16_t code;",
-        "  uint8_t bits[72];",
+        f"  uint8_t bits[{(CJK_W + 7) // 8 * CJK_H}];",
         "} __attribute__((packed));",
         "",
-        "static const FontCjkGlyph kFontCjk[1] PROGMEM = {{0, {0}}};",
-        "",
+        "static const FontCjkGlyph kFontCjk[] PROGMEM = {",
     ]
-    OUT_CJK.write_text("\n".join(lines), encoding="utf-8")
+    for ch in chars:
+        img = render_cjk_glyph(ch, font_path)
+        rows = pack_rows(img, CJK_W, CJK_H)
+        bits = ",".join(f"0x{b:02X}" for b in rows)
+        lines.append("  {0x%04X, {%s}}, // %s" % (ord(ch), bits, ch))
+    lines += ["};", ""]
+    OUT_CJK.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def save_preview(glyphs: dict[str, Image.Image]) -> None:
@@ -172,14 +215,16 @@ def save_preview(glyphs: dict[str, Image.Image]) -> None:
 def main() -> None:
     path, index = resolve_ascii_font()
     glyphs = emit_ascii(path, index)
-    emit_empty_cjk()
+    if not NOTO.is_file():
+        raise FileNotFoundError(f"缺少中文字体: {NOTO}")
+    emit_cjk_subset(str(NOTO))
     save_preview(glyphs)
     dot = glyphs["."]
     ink_rows = [
         i for i in range(ASCII_H) if any(dot.getpixel((x, i)) for x in range(ASCII_W))
     ]
     print(f"ASCII → {OUT_ASCII}（{path}, px={ASCII_PX}）")
-    print(f"CJK   → {OUT_CJK}（空表，中文走 RLE）")
+    print(f"CJK   → {OUT_CJK}（状态子集 {len(set(STATUS_CJK))} 字）")
     print(f"'.' 有墨行: {ink_rows}")
     print(f"预览 → {PREVIEW}")
 

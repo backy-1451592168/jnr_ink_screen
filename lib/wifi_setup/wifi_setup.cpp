@@ -59,6 +59,7 @@ uint8_t* g_uploadBuf = nullptr;
 size_t g_uploadPos = 0;
 bool g_uploadOverflow = false;
 bool g_lanApplyPending = false;
+int8_t g_lanLastResult = 0;  // 0=无结果，1=刷屏成功，-1=失败/取消
 
 uint32_t crc32Buf(const uint8_t* data, size_t len) {
   uint32_t crc = 0xFFFFFFFFu;
@@ -90,7 +91,6 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   label{font-size:13px;color:#555;display:block;margin-bottom:6px}
   input[type="text"],input[type="password"],input[type="search"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#fff;-webkit-user-select:text!important;user-select:text!important;-webkit-appearance:none;appearance:none;touch-action:manipulation}
   input:focus{border-color:#3b82f6}
-  #ssid{background:#f5f7fa;color:#333;cursor:default;-webkit-user-select:none;user-select:none}
   .pass-wrap{position:relative}
   .pass-wrap input{padding-right:48px}
   .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:transparent;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
@@ -126,7 +126,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <body>
 <div class="wrap">
   <h1>设备配网</h1>
-  <div class="sub" id="sub">点选家里 WiFi，再输入密码。名称不可手改，进页会自动扫描。</div>
+  <div class="sub" id="sub">点选家里 WiFi，或手动输入名称（隐藏网络），再输入密码。进页会自动扫描。</div>
 
   <div id="setupPanel">
     <div class="card">
@@ -136,7 +136,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     <div class="card">
       <form id="wifiForm" action="/save" method="POST" autocomplete="off">
         <label for="ssid">WiFi 名称 (SSID)</label>
-        <input id="ssid" type="text" name="ssid" readonly tabindex="-1" autocomplete="off" placeholder="请从上方列表点选">
+        <input id="ssid" type="text" name="ssid" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="点选上方，或手动输入">
         <label for="pass" style="margin-top:12px">密码</label>
         <div class="pass-wrap">
           <input id="pass" type="password" name="pass" inputmode="text" enterkeyhint="done" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" readonly placeholder="留空表示开放网络">
@@ -226,7 +226,7 @@ async function save(ev){
   if(ev)ev.preventDefault();
   unlockPass();
   const ssid=$('ssid').value.trim();
-  if(!ssid){tip.textContent='请先在上方列表点选 WiFi';tip.className='tip err';return;}
+  if(!ssid){tip.textContent='请点选或手动输入 WiFi 名称';tip.className='tip err';return;}
   tip.textContent='';tip.className='tip';
   setLoading(true,'请等待 WiFi 连接中...');
   try{
@@ -331,7 +331,7 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
     <input id="apiBaseBak" autocomplete="off" placeholder="留空表示不启用备用">
     <label style="margin-top:12px">每日自动同步时间</label>
     <select id="syncHour"></select>
-    <div class="tip">接口路径写死在固件；此处只配域名/端口等前缀。主地址留空用默认值。请求时先试主，失败再试备，下次仍先主。同步时间为本地整点，每天只自动拉取一次（拉图逻辑后续实现）。</div>
+    <div class="tip">接口路径写死在固件；此处只配域名/端口等前缀。主地址留空用默认值。请求时先试主，失败再试备，下次仍先主。同步时间为本地整点，小程序模式下每天自动拉取一次。</div>
     <button type="button" id="btnSave">保存设置</button>
     <button type="button" class="ok" id="btnFinish">完成并重启</button>
     <div class="tip" id="tip"></div>
@@ -794,9 +794,30 @@ void handleUploadPost() {
     return;
   }
 
+  g_lanLastResult = 0;
   g_lanApplyPending = true;
   // 先回包，避免刷屏 10–20s 导致浏览器超时；主循环 pollLanUploadApply 真正刷屏
   server.send(200, "text/plain; charset=utf-8", "上传成功，正在刷屏");
+}
+
+void handleUploadStatus() {
+  if (!g_lanUploadEnabled) {
+    server.send(404, "application/json; charset=utf-8", "{\"state\":\"off\"}");
+    return;
+  }
+  const char* state;
+  if (g_lanBusy || g_lanApplyPending) {
+    state = "busy";
+  } else if (g_lanLastResult == 1) {
+    state = "done";
+  } else if (g_lanLastResult == -1) {
+    state = "fail";
+  } else {
+    state = "idle";
+  }
+  char buf[48];
+  snprintf(buf, sizeof(buf), "{\"state\":\"%s\"}", state);
+  server.send(200, "application/json; charset=utf-8", buf);
 }
 
 void handleRootSta() {
@@ -874,6 +895,7 @@ void setupHttpSta() {
   server.on("/", HTTP_GET, handleRootSta);
   server.on("/upload", HTTP_GET, handleUploadGet);
   server.on("/upload", HTTP_POST, handleUploadPost, handleUploadWrite);
+  server.on("/upload/status", HTTP_GET, handleUploadStatus);
   server.onNotFound(handleNotFound);
   server.begin();
   g_httpReady = true;
@@ -922,29 +944,42 @@ void showConfigScreen() {
 }
 
 void showReadyScreen() {
-  // 就绪 ASCII 排版按竖屏坐标写的；临时竖屏刷，避免横屏模式下 y>480 被裁切
+  // 就绪排版按竖屏坐标；临时竖屏刷，避免横屏模式下 y>480 被裁切
   epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
   epd::clear(epd::WHITE);
 
-  const char* title = "DayIJoy Ready";
   String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("--");
   String mac = WiFi.macAddress();
   String url = "http://" + ip + "/device";
 
-  // 竖屏简单排版（当前字库仅 ASCII）；用黑字保证对比度
-  epd::drawText(40, 80, title, epd::BLACK, 2);
-  epd::drawText(40, 160, "LAN IP:", epd::BLACK, 2);
+  epd::drawText(40, 60, "初始化完成", epd::BLACK, 2);
+  epd::drawText(40, 140, "局域网 IP", epd::BLACK, 2);
   epd::drawText(40, 200, ip.c_str(), epd::BLACK, 2);
-  epd::drawText(40, 280, "MAC:", epd::BLACK, 2);
-  epd::drawText(40, 320, mac.c_str(), epd::BLACK, 2);
-  epd::drawText(40, 400, "Open browser:", epd::BLACK, 2);
-  epd::drawText(40, 440, url.c_str(), epd::BLACK, 1);
-  epd::drawText(40, 520, "Set API base,", epd::BLACK, 2);
-  epd::drawText(40, 560, "then Finish.", epd::BLACK, 2);
+  epd::drawText(40, 280, "MAC", epd::BLACK, 2);
+  epd::drawText(40, 320, mac.c_str(), epd::BLACK, 1);
+  epd::drawText(40, 400, "请用浏览器打开", epd::BLACK, 2);
+  epd::drawText(40, 460, url.c_str(), epd::BLACK, 1);
+  epd::drawText(40, 540, "设置服务地址", epd::BLACK, 2);
+  epd::drawText(40, 600, "后点完成", epd::BLACK, 2);
 
   Serial.printf("[wifi_setup] 就绪画面 IP=%s\n", ip.c_str());
   flushWithCooldown("就绪画面");
-  // 恢复用户屏参，供后续 sync / 局域网帧按正确方向刷
+  frame_store::applyStoredScreenSize();
+}
+
+void showStatusScreen(const char* title, const char* detail) {
+  epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
+  epd::clear(epd::WHITE);
+  if (title && title[0]) {
+    epd::drawText(40, 120, title, epd::BLACK, 2);
+  }
+  if (detail && detail[0]) {
+    epd::drawText(40, 220, detail, epd::BLACK, 1);
+  }
+  epd::drawText(40, 320, "DayIJoy", epd::BLACK, 2);
+  Serial.printf("[wifi_setup] 状态屏 title=%s detail=%s\n",
+                title ? title : "", detail ? detail : "");
+  flushWithCooldown("状态屏");
   frame_store::applyStoredScreenSize();
 }
 
@@ -952,20 +987,17 @@ void showSyncFailScreen() {
   epd::setLogicalSize(epd::kPortraitW, epd::kPortraitH);
   epd::clear(epd::WHITE);
   String base = apiBase();
-  epd::drawText(40, 80, "Sync failed", epd::BLACK, 2);
-  epd::drawText(40, 160, "Check apiBase:", epd::BLACK, 2);
-  // 地址可能较长，分两行粗略截断
+  epd::drawText(40, 80, "同步失败", epd::BLACK, 2);
+  epd::drawText(40, 160, "请检查服务地址", epd::BLACK, 2);
   if (base.length() <= 28) {
-    epd::drawText(40, 220, base.c_str(), epd::BLACK, 1);
+    epd::drawText(40, 240, base.c_str(), epd::BLACK, 1);
   } else {
     String a = base.substring(0, 28);
     String b = base.substring(28);
-    epd::drawText(40, 220, a.c_str(), epd::BLACK, 1);
-    epd::drawText(40, 260, b.c_str(), epd::BLACK, 1);
+    epd::drawText(40, 240, a.c_str(), epd::BLACK, 1);
+    epd::drawText(40, 280, b.c_str(), epd::BLACK, 1);
   }
-  epd::drawText(40, 340, "Local: no /api", epd::BLACK, 2);
-  epd::drawText(40, 400, "Long-press Action", epd::BLACK, 2);
-  epd::drawText(40, 460, "to retry sync.", epd::BLACK, 2);
+  epd::drawText(40, 380, "长按执行键重试", epd::BLACK, 2);
   Serial.printf("[wifi_setup] sync 失败提示 apiBase=%s\n", base.c_str());
   flushWithCooldown("sync失败提示");
   frame_store::applyStoredScreenSize();
@@ -1055,6 +1087,7 @@ void setLanUploadEnabled(bool enabled) {
   if (!enabled) {
     g_uploadAddrShown = false;
     g_lanApplyPending = false;
+    g_lanLastResult = 0;
   }
   Serial.printf("[wifi_setup] lanUpload=%d\n", (int)enabled);
 }
@@ -1117,11 +1150,13 @@ int pollLanUploadApply(LanActivityHook hook) {
     if (now < 1700000000) now = millis() / 1000;
     frame_store::setLastRefreshTs(now);
     g_uploadAddrShown = false;
+    g_lanLastResult = 1;
     Serial.printf("[wifi_setup] 局域网帧已刷屏 crc=%08x\n", crc);
     g_lanBusy = false;
     return 1;
   }
   Serial.println("[wifi_setup] 局域网刷屏失败或取消");
+  g_lanLastResult = -1;
   g_lanBusy = false;
   return -1;
 }

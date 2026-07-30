@@ -26,6 +26,10 @@ static bool g_localAdmin = false;
 static bool g_ntpOk = false;
 static uint32_t g_lastUnboundPollMs = 0;
 static int g_lastSyncDay = -1;  // 已绑定：当日是否已按 syncHour 同步
+static uint32_t g_wifiLostAt = 0;
+static bool g_wifiStatusShown = false;
+static uint32_t g_wifiRetryAt = 0;
+static uint32_t g_lanRemindAt = 0;
 
 static void led(uint8_t r, uint8_t g, uint8_t b) {
   rgb.setPixelColor(0, rgb.Color(r, g, b));
@@ -76,10 +80,18 @@ static void ledPurpleBreatheTick() {
 // 忙时主循环进不来：在 hook 里扫执行键，下载阶段可取消（全刷波形无法中断）
 static void busyTick() {
   ledPurpleBreatheTick();
-  if (buttons::poll(true) == buttons::Event::ActionCancel) {
-    ink_sync::requestCancel();
-    wifi_setup::requestLanCancel();
-  }
+  if (buttons::poll(true) != buttons::Event::ActionCancel) return;
+  // 未绑定查绑定：忽略忙时单击取消，避免连点把刚发起的 sync 停掉
+  if (!frame_store::bound()) return;
+  ink_sync::requestCancel();
+  wifi_setup::requestLanCancel();
+  // 黄闪两下确认按键；若已进入全刷则无法中断，至少有反馈
+  led(60, 40, 0);
+  delay(70);
+  led(0, 0, 0);
+  delay(70);
+  led(60, 40, 0);
+  delay(70);
 }
 
 static void beginRenderLed() {
@@ -103,25 +115,57 @@ static bool tryConnectSaved(uint32_t timeoutMs) {
     return false;
   }
 
+  // 有旧图：先保持双稳态，慢连再刷状态；无旧图：尽快刷一次反馈。
+  // 墨屏全刷 12–20s 且阻塞，但 WiFi 栈在后台仍会关联——刷屏时间绝不能计入超时预算。
+  const bool keepOldFrame = frame_store::hasValidLastFrame();
+  constexpr uint32_t kStatusAfterMs = 2500;
+
+  auto pollUntil = [&](uint32_t budgetMs) -> bool {
+    uint32_t waited = 0;
+    while (waited < budgetMs) {
+      if (WiFi.status() == WL_CONNECTED) return true;
+      led(40, 40, 0);
+      delay(250);
+      led(0, 0, 0);
+      delay(250);
+      waited += 500;
+    }
+    return WiFi.status() == WL_CONNECTED;
+  };
+
+  auto onConnected = [&](const char* how) {
+    wifi_setup::saveCurrentStaIp();
+    Serial.printf("[main] %s，IP=%s apiBase=%s\n", how,
+                  WiFi.localIP().toString().c_str(),
+                  wifi_setup::apiBase().c_str());
+  };
+
   Serial.printf("[main] 尝试连接已存 WiFi: %s\n", ssid.c_str());
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   wifi_setup::applySavedStaticIp();
   WiFi.begin(ssid.c_str(), pass.c_str());
 
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
+  const uint32_t graceMs = keepOldFrame ? kStatusAfterMs : 0;
+  const uint32_t grace = graceMs > timeoutMs ? timeoutMs : graceMs;
+  if (grace > 0 && pollUntil(grace)) {
+    onConnected("已连接");
+    return true;
+  }
+
+  // 整次开机只全刷这一次状态屏；DHCP 回退不再二次刷。
+  if (WiFi.status() != WL_CONNECTED) {
+    wifi_setup::showStatusScreen("WiFi连接中...", ssid.c_str());
     if (WiFi.status() == WL_CONNECTED) {
-      wifi_setup::saveCurrentStaIp();
-      Serial.printf("[main] 已连接，IP=%s apiBase=%s\n",
-                    WiFi.localIP().toString().c_str(),
-                    wifi_setup::apiBase().c_str());
+      onConnected("刷屏期间已连接");
       return true;
     }
-    led(40, 40, 0);
-    delay(250);
-    led(0, 0, 0);
-    delay(250);
+  }
+
+  const uint32_t remain = timeoutMs - grace;
+  if (remain > 0 && pollUntil(remain)) {
+    onConnected("已连接");
+    return true;
   }
 
   Serial.println("[main] 首次连接超时，回退 DHCP 重试");
@@ -129,17 +173,9 @@ static bool tryConnectSaved(uint32_t timeoutMs) {
   delay(200);
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.begin(ssid.c_str(), pass.c_str());
-  start = millis();
-  while (millis() - start < timeoutMs) {
-    if (WiFi.status() == WL_CONNECTED) {
-      wifi_setup::saveCurrentStaIp();
-      Serial.printf("[main] DHCP 已连接，IP=%s\n", WiFi.localIP().toString().c_str());
-      return true;
-    }
-    led(40, 40, 0);
-    delay(250);
-    led(0, 0, 0);
-    delay(250);
+  if (pollUntil(timeoutMs)) {
+    onConnected("DHCP 已连接");
+    return true;
   }
 
   Serial.println("[main] 连接超时");
@@ -176,7 +212,8 @@ static void markDailySyncDoneIfPastHour() {
 }
 
 // restoreLocalIfNoUpdate：开机用。就绪屏会盖住上次画面，若 sync 无新帧则强制刷回 /last.bin
-static void runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
+// 返回本次 sync 结果，供开机决定是否记「今日已同步」。
+static ink_sync::Result runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
   beginRenderLed();
   ink_sync::Result r = ink_sync::runOnce();
   if (restoreLocalIfNoUpdate && r == ink_sync::Result::OkNoUpdate &&
@@ -196,9 +233,12 @@ static void runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
     ledModeIdle();
   } else {
     ledFail();
-    // 失败时刷 ASCII 提示，避免只剩白屏不知原因
-    wifi_setup::showSyncFailScreen();
+    // 有本地画面时只闪红灯，避免失败页盖掉纪念日/绑定二维码
+    if (!frame_store::hasValidLastFrame()) {
+      wifi_setup::showSyncFailScreen();
+    }
   }
+  return r;
 }
 
 static void handleButtons() {
@@ -217,6 +257,14 @@ static void handleButtons() {
                                                       : frame_store::MODE_MINIPROG;
         frame_store::setWorkMode(next);
         wifi_setup::setLanUploadEnabled(next == frame_store::MODE_LAN);
+        g_lanRemindAt = millis();  // 进入局域网模式后重新计时提醒
+        // 连闪三次，避免只改常亮色看不清
+        for (int i = 0; i < 3; i++) {
+          ledFlashModeFast(true);
+          delay(120);
+          ledFlashModeFast(false);
+          delay(120);
+        }
         ledModeIdle();
         Serial.printf("[main] workMode=%d lanUpload=%d\n", (int)next,
                       (int)(next == frame_store::MODE_LAN));
@@ -225,8 +273,15 @@ static void handleButtons() {
       break;
 
     case buttons::Event::ActionCancel:
+      if (!frame_store::bound()) break;
       ink_sync::requestCancel();
       wifi_setup::requestLanCancel();
+      led(60, 40, 0);
+      delay(70);
+      led(0, 0, 0);
+      delay(70);
+      led(60, 40, 0);
+      delay(70);
       break;
 
     case buttons::Event::ActionShort:
@@ -236,6 +291,11 @@ static void handleButtons() {
         g_lastUnboundPollMs = millis();
         Serial.println("[main] 未绑定：单击执行键，立即查绑定");
         runSyncWithLed();
+      } else {
+        // 已绑定单击无业务：短闪提示「已收到」，避免误以为按键失灵
+        ledFlashModeFast(false);
+        delay(60);
+        ledModeIdle();
       }
       break;
 
@@ -282,6 +342,8 @@ static void handleButtons() {
 
     case buttons::Event::SystemReconfig:
       Serial.println("[main] 系统键 3s：重配 WiFi");
+      led(60, 26, 0);
+      delay(200);
       frame_store::clearWifiCreds();
       delay(200);
       ESP.restart();
@@ -289,8 +351,14 @@ static void handleButtons() {
 
     case buttons::Event::SystemFactory:
       Serial.println("[main] 系统键 8s：出厂重置");
-      led(60, 0, 0);
-      delay(300);
+      // 出厂只清本地；云端绑定需小程序解绑，先刷提示再清机
+      wifi_setup::showStatusScreen("出厂重置", "请先小程序解绑");
+      for (int i = 0; i < 4; i++) {
+        led(60, 0, 0);
+        delay(80);
+        led(0, 0, 0);
+        delay(80);
+      }
       frame_store::factoryReset();
       delay(200);
       ESP.restart();
@@ -337,6 +405,150 @@ static void scheduleSync() {
   runSyncWithLed();
 }
 
+/** 系统键按住过程灯提示：橙→黄闪（可重配）→红快闪（将出厂） */
+static void tickSystemHoldLed() {
+  uint8_t lv = buttons::systemHoldLevel();
+  static uint8_t last = 0;
+  static uint32_t blinkAt = 0;
+  static bool on = false;
+  if (lv == 0) {
+    if (last != 0) ledModeIdle();
+    last = 0;
+    return;
+  }
+  uint32_t now = millis();
+  if (lv == 1) {
+    led(60, 26, 0);  // 橙：未满 3s
+  } else if (lv == 2) {
+    if (now - blinkAt > 400) {
+      blinkAt = now;
+      on = !on;
+      if (on) led(60, 45, 0);  // 黄闪：松手即重配
+      else led(0, 0, 0);
+    }
+  } else {
+    if (now - blinkAt > 120) {
+      blinkAt = now;
+      on = !on;
+      if (on) led(60, 0, 0);  // 红快闪：即将出厂
+      else led(0, 0, 0);
+    }
+  }
+  last = lv;
+}
+
+/** STA 运行中断网：黄闪 + 必要时刷「WiFi连接中」并周期性 WiFi.begin */
+static void maintainWifi() {
+  if (!g_localAdmin || g_provisioning) return;
+  if (ink_sync::isBusy() || wifi_setup::lanBusy()) return;
+  // 系统键按住时不抢灯、不刷屏
+  if (buttons::systemHoldLevel() != 0) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (g_wifiLostAt == 0) return;
+    Serial.println("[main] WiFi 已恢复");
+    wifi_setup::saveCurrentStaIp();
+    if (g_wifiStatusShown && frame_store::hasValidLastFrame()) {
+      beginRenderLed();
+      auto r = ink_sync::refreshLocal(true);
+      endRenderLed();
+      if (r != ink_sync::Result::OkUpdated) ledFail();
+      else ledModeIdle();
+    } else {
+      ledModeIdle();
+    }
+    g_wifiLostAt = 0;
+    g_wifiStatusShown = false;
+    return;
+  }
+
+  uint32_t now = millis();
+  if (g_wifiLostAt == 0) {
+    g_wifiLostAt = now;
+    g_wifiRetryAt = now;
+    Serial.println("[main] WiFi 断开，准备重连");
+    return;
+  }
+
+  if (!g_wifiStatusShown && (now - g_wifiLostAt) >= 2500) {
+    Preferences prefs;
+    prefs.begin("jnr", true);
+    String ssid = prefs.getString("wifiSsid", "");
+    prefs.end();
+    wifi_setup::showStatusScreen("WiFi连接中...",
+                                 ssid.isEmpty() ? nullptr : ssid.c_str());
+    g_wifiStatusShown = true;
+  }
+
+  if (now - g_wifiRetryAt >= 15000) {
+    g_wifiRetryAt = now;
+    Preferences prefs;
+    prefs.begin("jnr", true);
+    String ssid = prefs.getString("wifiSsid", "");
+    String pass = prefs.getString("wifiPass", "");
+    prefs.end();
+    if (!ssid.isEmpty()) {
+      Serial.printf("[main] WiFi 重连尝试 %s\n", ssid.c_str());
+      wifi_setup::applySavedStaticIp();
+      WiFi.disconnect(false, false);
+      delay(50);
+      WiFi.begin(ssid.c_str(), pass.c_str());
+    }
+  }
+
+  // 断约 5 分钟仍失败：清凭证重启进配网（密码变更等）
+  constexpr uint32_t kWifiGiveUpMs = 300000;
+  if (now - g_wifiLostAt >= kWifiGiveUpMs) {
+    Preferences prefs;
+    prefs.begin("jnr", true);
+    String ssid = prefs.getString("wifiSsid", "");
+    prefs.end();
+    Serial.println("[main] WiFi 长时间失败，清除凭证并进配网");
+    wifi_setup::showStatusScreen("连接失败进入配网",
+                                 ssid.isEmpty() ? nullptr : ssid.c_str());
+    frame_store::clearWifiCreds();
+    delay(300);
+    ESP.restart();
+  }
+
+  static uint32_t blinkAt = 0;
+  static bool on = false;
+  if (now - blinkAt > 500) {
+    blinkAt = now;
+    on = !on;
+    if (on) led(40, 40, 0);
+    else led(0, 0, 0);
+  }
+}
+
+/** 局域网模式停留过久：每 10 分钟青灯连闪，提醒可双击模式键切回推送 */
+static void tickLanModeRemind() {
+  if (!g_localAdmin || g_provisioning) return;
+  if (frame_store::workMode() != frame_store::MODE_LAN) {
+    g_lanRemindAt = 0;
+    return;
+  }
+  if (ink_sync::isBusy() || wifi_setup::lanBusy()) return;
+  if (buttons::systemHoldLevel() != 0) return;
+  if (g_wifiLostAt != 0) return;
+
+  uint32_t now = millis();
+  if (g_lanRemindAt == 0) {
+    g_lanRemindAt = now;
+    return;
+  }
+  if (now - g_lanRemindAt < 600000) return;  // 10 分钟
+  g_lanRemindAt = now;
+  Serial.println("[main] 局域网模式提醒：仍为青灯，可双击模式键切回");
+  for (int i = 0; i < 5; i++) {
+    led(0, 50, 50);
+    delay(160);
+    led(0, 0, 0);
+    delay(160);
+  }
+  ledModeIdle();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -359,7 +571,9 @@ void setup() {
 
   buttons::begin();
 
-  if (tryConnectSaved(15000)) {
+  // 有凭证时立刻 WiFi.begin（见 tryConnectSaved）；勿在此前全刷「初始化中」，
+  // 否则白白推迟关联，且多一次 12–20s 全刷。无凭证则很快落入 startAP 配网屏。
+  if (tryConnectSaved(20000)) {
     ledModeIdle();
     wifi_setup::startLocalAdmin();
     g_localAdmin = true;
@@ -369,13 +583,18 @@ void setup() {
     // 等待期间墨屏双稳态仍保留断电前画面，不必先刷就绪屏
     g_lastUnboundPollMs = millis();
     wifi_setup::setLanUploadEnabled(frame_store::workMode() == frame_store::MODE_LAN);
+    ink_sync::Result bootSync;
     if (frame_store::hasValidLastFrame()) {
-      runSyncWithLed(true);
+      bootSync = runSyncWithLed(true);
     } else {
       wifi_setup::showReadyScreen();
-      runSyncWithLed(false);
+      bootSync = runSyncWithLed(false);
     }
-    markDailySyncDoneIfPastHour();
+    // 仅开机 sync 成功（含无更新）才记今日已同步；失败则允许当天自动补拉
+    if (bootSync == ink_sync::Result::OkUpdated ||
+        bootSync == ink_sync::Result::OkNoUpdate) {
+      markDailySyncDoneIfPastHour();
+    }
     return;
   }
 
@@ -403,6 +622,7 @@ void loop() {
   }
 
   handleButtons();
+  tickSystemHoldLed();
 
   if (g_provisioning) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -410,18 +630,23 @@ void loop() {
       delay(50);
       return;
     }
-    static uint32_t t = 0;
-    static bool on = false;
-    if (millis() - t > 600) {
-      t = millis();
-      on = !on;
-      if (on) led(60, 26, 0);
-      else led(0, 0, 0);
+    // 系统键按住时 tickSystemHoldLed 已接管灯色
+    if (buttons::systemHoldLevel() == 0) {
+      static uint32_t t = 0;
+      static bool on = false;
+      if (millis() - t > 600) {
+        t = millis();
+        on = !on;
+        if (on) led(60, 26, 0);
+        else led(0, 0, 0);
+      }
     }
     return;
   }
 
   if (g_localAdmin) {
+    maintainWifi();
+    tickLanModeRemind();
     int lanR = wifi_setup::pollLanUploadApply(busyTick);
     if (lanR == 1) ledModeIdle();
     else if (lanR < 0) ledFail();

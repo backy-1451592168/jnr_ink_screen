@@ -54,11 +54,11 @@ button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
       <option value="jarvis">Jarvis（最平滑，细节偏软）</option>
     </select>
     <div class="slider-row">
-      <label for="ditherStrength">抖动强度</label>
+      <label for="ditherStrength">抖动强度 <span id="ditherStrengthVal">1.0</span></label>
       <input type="range" id="ditherStrength" min="0" max="5" step="0.1" value="1.0">
     </div>
     <div class="slider-row">
-      <label for="contrast">对比度</label>
+      <label for="contrast">对比度 <span id="contrastVal">1.2</span></label>
       <input type="range" id="contrast" min="0.5" max="2" step="0.1" value="1.2">
     </div>
   </div>
@@ -68,6 +68,7 @@ button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
       <button id="sendToESP32">发送到相框</button>
     </div>
     <div class="tip" id="tip"></div>
+    <div class="tip" style="margin-top:10px">青灯=局域网传图；双击模式键可切回小程序推送（绿灯）。刷屏约需 15–20 秒，请勿断电。</div>
   </div>
   <div class="footer">DayIJoy · 心选日 · 局域网传图</div>
 </div>
@@ -89,8 +90,16 @@ button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
 
         document.getElementById('upload').addEventListener('change', handleFileUpload);
         document.getElementById('sendToESP32').addEventListener('click', sendToESP32);
-        document.getElementById('ditherStrength').addEventListener('input', updateImage);
-        document.getElementById('contrast').addEventListener('input', updateImage);
+        document.getElementById('ditherStrength').addEventListener('input', function () {
+            document.getElementById('ditherStrengthVal').textContent =
+                parseFloat(this.value).toFixed(1);
+            updateImage();
+        });
+        document.getElementById('contrast').addEventListener('input', function () {
+            document.getElementById('contrastVal').textContent =
+                parseFloat(this.value).toFixed(1);
+            updateImage();
+        });
         document.getElementById('ditherType').addEventListener('change', updateImage);
         document.getElementById('orient').addEventListener('change', onOrientChange);
 
@@ -667,6 +676,40 @@ function adjustContrast(imageData, factor) {
             return out;
         }
 
+        async function waitForFlushDone() {
+            const started = Date.now();
+            let sawBusy = false;
+            while (Date.now() - started < 60000) {
+                await new Promise(r => setTimeout(r, 1000));
+                let j;
+                try {
+                    j = await (await fetch('/upload/status')).json();
+                } catch (e) {
+                    continue;
+                }
+                if (j.state === 'busy') {
+                    sawBusy = true;
+                    const sec = Math.round((Date.now() - started) / 1000);
+                    setTip('墨屏刷屏中…约需 15–20 秒（已 ' + sec + 's）');
+                    continue;
+                }
+                if (j.state === 'done') {
+                    setTip('刷屏完成，请看相框画面', 'ok');
+                    return;
+                }
+                if (j.state === 'fail') {
+                    setTip('刷屏失败或已取消，可再试一次', 'err');
+                    return;
+                }
+                // idle：上传刚结束可能尚未进入 busy，稍等；已见过 busy 再 idle 也当完成
+                if (sawBusy || Date.now() - started > 3000) {
+                    setTip('刷屏完成，请看相框画面', 'ok');
+                    return;
+                }
+            }
+            setTip('等待刷屏超时，请查看相框是否已更新', 'err');
+        }
+
         async function sendToESP32() {
             const canvas = document.getElementById('canvas');
             if (!currentImageData || !canvas.width) {
@@ -698,7 +741,8 @@ function adjustContrast(imageData, factor) {
                 );
                 const text = await response.text();
                 if (!response.ok) throw new Error(text || response.statusText);
-                setTip(text || '上传成功，正在刷屏', 'ok');
+                setTip(text || '上传成功，正在刷屏');
+                await waitForFlushDone();
             } catch (e) {
                 setTip('上传失败: ' + (e.message || e), 'err');
             } finally {

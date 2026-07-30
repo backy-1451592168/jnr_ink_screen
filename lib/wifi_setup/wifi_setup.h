@@ -16,10 +16,13 @@ constexpr const char* kDefaultApiBase = "https://s1.z100.vip:7659/api";
 // 在墨水屏上刷出「设备配网」画面（静态点阵 + 运行时 MAC）。
 void showConfigScreen();
 
-// 联网成功后的简要信息屏：局域网 IP / MAC / 浏览器地址（ASCII）。
+// 联网成功后的简要信息屏：IP / MAC / 管理页地址（中文）。
 void showReadyScreen();
 
-// sync 失败时的 ASCII 提示屏（含当前 apiBase），避免白屏不知原因。
+// 开机/连接过程状态屏（中文标题 + 可选 ASCII 副行，如 SSID）。全刷约 12–20s。
+void showStatusScreen(const char* title, const char* detail = nullptr);
+
+// sync 失败提示屏（中文 + apiBase）。有本地画面时调用方应避免刷此屏，以免盖图。
 void showSyncFailScreen();
 
 // 启动 AP + DNS 劫持 + HTTP 配网服务，并刷出配网画面。
