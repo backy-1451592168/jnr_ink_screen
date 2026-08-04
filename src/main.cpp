@@ -30,18 +30,29 @@ static uint32_t g_wifiLostAt = 0;
 static bool g_wifiStatusShown = false;
 static uint32_t g_wifiRetryAt = 0;
 static uint32_t g_lanRemindAt = 0;
+// 模式键双击只预选；单击执行键才真正切换（超时/再双击取消）
+static bool g_modePending = false;
+static frame_store::WorkMode g_pendingMode = frame_store::MODE_MINIPROG;
+static uint32_t g_modePendingAt = 0;
+static uint32_t g_modePendingBlinkAt = 0;
+static bool g_modePendingLedOn = true;
+static constexpr uint32_t kModePendingTimeoutMs = 15000;
 
 static void led(uint8_t r, uint8_t g, uint8_t b) {
   rgb.setPixelColor(0, rgb.Color(r, g, b));
   rgb.show();
 }
 
-static void ledModeIdle() {
-  if (frame_store::workMode() == frame_store::MODE_LAN) {
+static void ledForMode(frame_store::WorkMode m) {
+  if (m == frame_store::MODE_LAN) {
     led(0, 50, 50);  // 青
   } else {
     led(0, 60, 0);  // 绿
   }
+}
+
+static void ledModeIdle() {
+  ledForMode(frame_store::workMode());
 }
 
 static void ledFail() {
@@ -55,13 +66,64 @@ static void ledFail() {
 }
 
 static void ledFlashModeFast(bool on) {
-  if (frame_store::workMode() == frame_store::MODE_LAN) {
-    if (on) led(0, 50, 50);
-    else led(0, 0, 0);
-  } else {
-    if (on) led(0, 60, 0);
-    else led(0, 0, 0);
+  if (on) ledModeIdle();
+  else led(0, 0, 0);
+}
+
+static void clearModePending() {
+  g_modePending = false;
+  g_modePendingAt = 0;
+}
+
+static void beginModePending(frame_store::WorkMode next) {
+  g_pendingMode = next;
+  g_modePending = true;
+  g_modePendingAt = millis();
+  g_modePendingBlinkAt = millis();
+  g_modePendingLedOn = true;
+  ledForMode(next);  // 立刻亮，之后 tickModePending 慢闪
+}
+
+// restoreLocalIfNoUpdate：开机用。就绪屏会盖住上次画面，若 sync 无新帧则强制刷回 /last.bin
+static ink_sync::Result runSyncWithLed(bool restoreLocalIfNoUpdate = false);
+
+static void commitPendingMode() {
+  auto next = g_pendingMode;
+  const bool backFromLan = (frame_store::workMode() == frame_store::MODE_LAN &&
+                            next == frame_store::MODE_MINIPROG);
+  frame_store::setWorkMode(next);
+  wifi_setup::setLanUploadEnabled(next == frame_store::MODE_LAN);
+  if (next == frame_store::MODE_LAN) g_lanRemindAt = millis();
+  clearModePending();
+  ledModeIdle();  // 确认后目标色常亮
+  Serial.printf("[main] workMode=%d lanUpload=%d (已确认)\n", (int)next,
+                (int)(next == frame_store::MODE_LAN));
+  // 局域网图覆盖了 last.bin 且 contentVersion 置 0；切回后自动 sync 恢复正式画面
+  if (backFromLan) {
+    Serial.println("[main] 切回小程序推送，自动 sync");
+    runSyncWithLed();
   }
+}
+
+/** 预选中：目标色慢闪；超时取消。断网/按系统键时不抢灯 */
+static void tickModePending() {
+  if (!g_modePending) return;
+  if (millis() - g_modePendingAt >= kModePendingTimeoutMs) {
+    Serial.println("[main] 模式预选超时，已取消");
+    clearModePending();
+    ledModeIdle();
+    return;
+  }
+  if (buttons::systemHoldLevel() != 0) return;
+  if (g_wifiLostAt != 0 || WiFi.status() != WL_CONNECTED) return;
+  if (ink_sync::isBusy() || wifi_setup::lanBusy()) return;
+
+  uint32_t now = millis();
+  if (now - g_modePendingBlinkAt < 500) return;  // 约 1Hz 慢闪
+  g_modePendingBlinkAt = now;
+  g_modePendingLedOn = !g_modePendingLedOn;
+  if (g_modePendingLedOn) ledForMode(g_pendingMode);
+  else led(0, 0, 0);
 }
 
 // 下载/刷屏期间紫色呼吸（约 1.5s 周期）
@@ -213,7 +275,7 @@ static void markDailySyncDoneIfPastHour() {
 
 // restoreLocalIfNoUpdate：开机用。就绪屏会盖住上次画面，若 sync 无新帧则强制刷回 /last.bin
 // 返回本次 sync 结果，供开机决定是否记「今日已同步」。
-static ink_sync::Result runSyncWithLed(bool restoreLocalIfNoUpdate = false) {
+static ink_sync::Result runSyncWithLed(bool restoreLocalIfNoUpdate) {
   beginRenderLed();
   ink_sync::Result r = ink_sync::runOnce();
   if (restoreLocalIfNoUpdate && r == ink_sync::Result::OkNoUpdate &&
@@ -251,24 +313,19 @@ static void handleButtons() {
   switch (ev) {
     case buttons::Event::ModeDouble:
       if (unbound || g_provisioning) break;
+      if (g_modePending) {
+        // 再双击：取消预选
+        Serial.println("[main] 取消模式预选");
+        clearModePending();
+        ledModeIdle();
+        break;
+      }
       {
         auto m = frame_store::workMode();
         auto next = (m == frame_store::MODE_MINIPROG) ? frame_store::MODE_LAN
                                                       : frame_store::MODE_MINIPROG;
-        frame_store::setWorkMode(next);
-        wifi_setup::setLanUploadEnabled(next == frame_store::MODE_LAN);
-        g_lanRemindAt = millis();  // 进入局域网模式后重新计时提醒
-        // 连闪三次，避免只改常亮色看不清
-        for (int i = 0; i < 3; i++) {
-          ledFlashModeFast(true);
-          delay(120);
-          ledFlashModeFast(false);
-          delay(120);
-        }
-        ledModeIdle();
-        Serial.printf("[main] workMode=%d lanUpload=%d\n", (int)next,
-                      (int)(next == frame_store::MODE_LAN));
-        // 只改 LED；传图地址仍用执行键长按刷出，避免无谓全刷
+        beginModePending(next);
+        Serial.printf("[main] 模式预选=%d，目标色慢闪，单击执行键确认\n", (int)next);
       }
       break;
 
@@ -285,14 +342,17 @@ static void handleButtons() {
       break;
 
     case buttons::Event::ActionShort:
-      // 未绑定单击：立即查是否已绑定；成功且有纪念日则拉图，否则继续 60s 轮询
+      // 有模式预选时：单击确认切换；未绑定单击查绑定；否则短闪「已收到」
       if (g_provisioning) break;
+      if (g_modePending) {
+        commitPendingMode();
+        break;
+      }
       if (unbound) {
         g_lastUnboundPollMs = millis();
         Serial.println("[main] 未绑定：单击执行键，立即查绑定");
         runSyncWithLed();
       } else {
-        // 已绑定单击无业务：短闪提示「已收到」，避免误以为按键失灵
         ledFlashModeFast(false);
         delay(60);
         ledModeIdle();
@@ -301,6 +361,10 @@ static void handleButtons() {
 
     case buttons::Event::ActionDouble:
       if (g_provisioning || unbound) break;
+      if (g_modePending) {
+        clearModePending();
+        ledModeIdle();
+      }
       if (frame_store::workMode() == frame_store::MODE_MINIPROG ||
           frame_store::workMode() == frame_store::MODE_LAN) {
         beginRenderLed();
@@ -324,6 +388,10 @@ static void handleButtons() {
 
     case buttons::Event::ActionLong:
       if (g_provisioning) break;
+      if (g_modePending) {
+        clearModePending();
+        ledModeIdle();
+      }
       if (frame_store::workMode() == frame_store::MODE_LAN && !unbound) {
         // 长按：显示/退出传图地址页
         if (wifi_setup::toggleUploadAddressScreen()) {
@@ -521,9 +589,10 @@ static void maintainWifi() {
   }
 }
 
-/** 局域网模式停留过久：每 10 分钟青灯连闪，提醒可双击模式键切回推送 */
+/** 局域网模式停留过久：每 10 分钟青灯连闪，提醒切回推送 */
 static void tickLanModeRemind() {
   if (!g_localAdmin || g_provisioning) return;
+  if (g_modePending) return;
   if (frame_store::workMode() != frame_store::MODE_LAN) {
     g_lanRemindAt = 0;
     return;
@@ -539,7 +608,7 @@ static void tickLanModeRemind() {
   }
   if (now - g_lanRemindAt < 600000) return;  // 10 分钟
   g_lanRemindAt = now;
-  Serial.println("[main] 局域网模式提醒：仍为青灯，可双击模式键切回");
+  Serial.println("[main] 局域网模式提醒：仍为青灯，可双击模式键后单击执行键切回");
   for (int i = 0; i < 5; i++) {
     led(0, 50, 50);
     delay(160);
@@ -646,6 +715,7 @@ void loop() {
 
   if (g_localAdmin) {
     maintainWifi();
+    tickModePending();
     tickLanModeRemind();
     int lanR = wifi_setup::pollLanUploadApply(busyTick);
     if (lanR == 1) ledModeIdle();

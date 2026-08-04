@@ -722,7 +722,7 @@ void handleFinish() {
 
 void handleUploadGet() {
   if (!g_lanUploadEnabled) {
-    server.send(404, "text/plain; charset=utf-8", "请先双击模式键切到局域网传图（青灯）");
+    server.send(404, "text/plain; charset=utf-8", "请先双击模式键并单击执行键切到局域网传图（青灯）");
     return;
   }
   server.sendHeader("Cache-Control", "no-store");
@@ -1144,7 +1144,7 @@ int pollLanUploadApply(LanActivityHook hook) {
   if (ok && !g_lanCancel) {
     uint32_t crc = crc32Buf(g_uploadBuf, len);
     frame_store::saveLastFrame(g_uploadBuf, len, crc);
-    // 置 0，切回小程序模式长按 sync 时可重新拉正式帧
+    // 置 0，切回小程序模式自动 sync（或长按）时可重新拉正式帧
     frame_store::setContentVersion(0);
     uint32_t now = (uint32_t)time(nullptr);
     if (now < 1700000000) now = millis() / 1000;

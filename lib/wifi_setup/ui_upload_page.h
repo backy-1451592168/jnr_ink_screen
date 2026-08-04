@@ -73,7 +73,7 @@ button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
       <button id="sendToESP32">发送到相框</button>
     </div>
     <div class="tip" id="tip"></div>
-    <div class="tip" style="margin-top:10px">青灯=局域网传图；双击模式键可切回小程序推送（绿灯）。刷屏约需 15–20 秒，请勿断电。</div>
+    <div class="tip" style="margin-top:10px">青灯=局域网传图；切回小程序推送：双击模式键（绿灯慢闪），再单击执行键确认后会自动拉正式画面。刷屏约需 15–20 秒，请勿断电。</div>
   </div>
   <div class="footer">DayIJoy · 心选日 · 局域网传图</div>
 </div>
