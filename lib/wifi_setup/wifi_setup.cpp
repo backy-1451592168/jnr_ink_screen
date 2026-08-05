@@ -82,45 +82,50 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <meta name="format-detection" content="telephone=no">
 <title>设备配网</title>
 <style>
+  :root{--ink:#080808;--lime:#080808;--blue:#2563eb}
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f6fa;color:#222}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f6fa;color:var(--ink)}
   .wrap{max-width:480px;margin:0 auto;padding:24px 18px}
   h1{font-size:22px;margin:0 0 4px}
   .sub{color:#888;font-size:13px;margin-bottom:18px}
   .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px}
   label{font-size:13px;color:#555;display:block;margin-bottom:6px}
-  input[type="text"],input[type="password"],input[type="search"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#fff;-webkit-user-select:text!important;user-select:text!important;-webkit-appearance:none;appearance:none;touch-action:manipulation}
-  input:focus{border-color:#3b82f6}
+  input[type="text"],input[type="password"],input[type="search"]{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:16px;outline:none;background:#f8fafc;-webkit-user-select:text!important;user-select:text!important;-webkit-appearance:none;appearance:none;touch-action:manipulation;transition:border-color .2s,box-shadow .2s}
+  input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
   .pass-wrap{position:relative}
   .pass-wrap input{padding-right:48px}
   .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:transparent;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
-  .eye svg{width:22px;height:22px;display:block;fill:#2c2c2c}
+  .eye svg{width:22px;height:22px;display:block;fill:var(--ink)}
   .eye .ico-on{display:none}
   .eye.is-show .ico-on{display:block}
   .eye.is-show .ico-off{display:none}
-  button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
-  button:active{background:#2563eb}
+  button{width:100%;padding:12px;background:var(--ink);color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:600;margin-top:15px;cursor:pointer;transition:background .2s,transform .15s}
+  button:active{background:#222;transform:scale(.98)}
   button:disabled{opacity:.6}
-  button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6;margin-top:8px}
+  button.ok{background:var(--ink);color:#fff;border:0}
+  button.ok:active{background:#222}
+  button.ghost{background:#fff;color:var(--ink);border:1px solid var(--ink);margin-top:8px}
+  button.ghost:active{background:#f1f5f9}
   .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
   .list{max-height:240px;overflow-y:auto;border:1px solid #eef0f4;border-radius:8px;margin-top:8px;-webkit-overflow-scrolling:touch}
-  .item{padding:10px 12px;border-bottom:1px solid #f0f2f6;display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+  .item{padding:10px 12px;border-bottom:1px solid #f0f2f6;display:flex;justify-content:space-between;align-items:center;cursor:pointer;transition:background .15s,box-shadow .15s}
   .item:last-child{border-bottom:0}
-  .item.sel{background:#eaf2ff}
+  .item.sel{background:#f2fff2;box-shadow:inset 4px 0 0 var(--lime)}
   .rssi{font-size:12px;color:#888;flex-shrink:0;margin-left:8px}
   .tip{font-size:12px;color:#888;margin-top:6px;line-height:1.5}
-  .tip.ok{color:#16a34a}
-  .tip.err,.item.err{color:#dc2626}
-  .tip.warn{color:#b45309}
+  .tip.ok{color:#15803d}
+  .tip.err{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:9px 10px}
+  .item.err{color:#dc2626}
+  .tip.warn{color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 10px;margin-top:8px}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99}
   .mask[hidden]{display:none}
   .mask-box{background:#fff;border-radius:12px;padding:28px 24px;max-width:280px;text-align:center;font-size:15px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.18)}
-  .spin{width:28px;height:28px;margin:0 auto 14px;border:3px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite}
+  .spin{width:28px;height:28px;margin:0 auto 14px;border:3px solid #e5e7eb;border-top-color:var(--lime);border-radius:50%;animation:spin 0.8s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   #setupPanel[hidden],#okPanel[hidden]{display:none!important}
-  .ok-title{font-size:18px;font-weight:600;color:#16a34a;margin:0 0 8px}
-  .ok-link{display:block;margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;color:#2563eb;word-break:break-all;font-size:14px;text-decoration:none}
+  .ok-title{font-size:18px;font-weight:600;color:#15803d;margin:0 0 8px}
+  .ok-link{display:block;margin:10px 0;padding:11px 12px;background:#f8fafc;border:1px dashed #94a3b8;border-radius:8px;color:var(--blue);word-break:break-all;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;text-decoration:none}
 </style>
 </head>
 <body>
@@ -145,11 +150,11 @@ const char kIndexHtml[] PROGMEM = R"HTML(
             <svg class="ico-off" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M332.8 729.6l34.133333-34.133333c42.666667 12.8 93.866667 21.333333 145.066667 21.333333 162.133333 0 285.866667-68.266667 375.466667-213.333333-46.933333-72.533333-102.4-128-166.4-162.133334l29.866666-29.866666c72.533333 42.666667 132.266667 106.666667 183.466667 192-98.133333 170.666667-243.2 256-426.666667 256-59.733333 4.266667-119.466667-8.533333-174.933333-29.866667z m-115.2-64c-51.2-38.4-93.866667-93.866667-132.266667-157.866667 98.133333-170.666667 243.2-256 426.666667-256 38.4 0 76.8 4.266667 110.933333 12.8l-34.133333 34.133334c-25.6-4.266667-46.933333-4.266667-76.8-4.266667-162.133333 0-285.866667 68.266667-375.466667 213.333333 34.133333 51.2 72.533333 93.866667 115.2 128l-34.133333 29.866667z m230.4-46.933333l29.866667-29.866667c8.533333 4.266667 21.333333 4.266667 29.866666 4.266667 46.933333 0 85.333333-38.4 85.333334-85.333334 0-12.8 0-21.333333-4.266667-29.866666l29.866667-29.866667c12.8 17.066667 17.066667 38.4 17.066666 64 0 72.533333-55.466667 128-128 128-17.066667-4.266667-38.4-12.8-59.733333-21.333333zM384 499.2c4.266667-68.266667 55.466667-119.466667 123.733333-123.733333 0 4.266667-123.733333 123.733333-123.733333 123.733333zM733.866667 213.333333l29.866666 29.866667-512 512-34.133333-29.866667L733.866667 213.333333z"></path></svg>
           </button>
         </div>
-        <button type="submit" id="btnSave">保存并连接</button>
+        <button type="submit" class="ok" id="btnSave">保存并连接</button>
       </form>
       <div class="tip" id="tip"></div>
     </div>
-    <div class="card"><button type="button" class="ghost" id="btnReset">忘记网络 / 重置</button></div>
+    <div class="card"><button type="button" class="ghost" id="btnReset">重置网络</button></div>
   </div>
 
   <div id="okPanel" hidden>
@@ -286,8 +291,9 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>设备信息</title>
 <style>
+  :root{--ink:#080808;--lime:#080808;--blue:#2563eb}
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f6fa;color:#222}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f6fa;color:var(--ink)}
   .wrap{max-width:480px;margin:0 auto;padding:24px 18px}
   h1{font-size:22px;margin:0 0 4px}
   .sub{color:#888;font-size:13px;margin-bottom:18px}
@@ -296,20 +302,23 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
   .row:last-child{border-bottom:0}
   .k{color:#888;flex-shrink:0}
   .v{word-break:break-all;text-align:right}
+  .v a{display:inline-block;padding:4px 7px;background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;color:var(--blue);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   label{font-size:13px;color:#555;display:block;margin-bottom:6px}
-  input,select{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:14px;outline:none;background:#fff}
-  input:focus,select:focus{border-color:#3b82f6}
-  button{width:100%;padding:12px;background:#3b82f6;color:#fff;border:0;border-radius:8px;font-size:16px;font-weight:500;margin-top:8px;cursor:pointer}
-  button:active{background:#2563eb}
-  button.ghost{background:#fff;color:#3b82f6;border:1px solid #3b82f6}
-  button.ok{background:#16a34a;color:#fff}
+  input,select{width:100%;padding:11px 12px;border:1px solid #dcdfe6;border-radius:8px;font-size:14px;outline:none;background:#f8fafc;transition:border-color .2s,box-shadow .2s}
+  input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+  button{width:100%;padding:12px;background:#fff;color:var(--ink);border:1px solid var(--lime);border-radius:8px;font-size:16px;font-weight:600;margin-top:15px;cursor:pointer;transition:background .2s,transform .15s}
+  button:active{background:#f2fff2;transform:scale(.98)}
+  button:disabled{opacity:.6}
+  button.ghost{background:#fff;color:var(--ink);border:1px solid var(--lime)}
+  button.ok{background:var(--ink);color:#fff;border:0}
+  button.ok:active{background:#222}
   .tip{font-size:12px;color:#888;margin-top:8px}
-  .tip.ok{color:#16a34a}
-  .tip.err{color:#dc2626}
+  .tip.ok{color:#15803d}
+  .tip.err{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:9px 10px}
   .footer{text-align:center;color:#aaa;font-size:12px;margin-top:14px}
   .done-box{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px}
   .done-box.show{display:block}
-  .done-box a{color:#2563eb;word-break:break-all;font-size:14px}
+  .done-box a{display:block;padding:10px 11px;background:#fff;border:1px dashed #94a3b8;border-radius:8px;color:var(--blue);word-break:break-all;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
   .done-actions{display:flex;gap:8px;margin-top:10px}
   .done-actions button{margin-top:0}
   .banner{display:none;margin-bottom:14px;padding:12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;line-height:1.55;color:#92400e}
@@ -320,7 +329,7 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
 <div class="wrap">
   <h1>设备信息</h1>
   <div class="sub">查看本机网络信息，并设置小程序服务地址</div>
-  <div class="banner" id="apBanner">你仍连着设备热点。设置完后请点「完成并重启」，再把手机 WiFi 切回家里网络；热点断开后本页会失联，属正常。</div>
+  <div class="banner" id="apBanner">你仍连着设备热点。设置完后请点「保存并重启」，再把手机 WiFi 切回家里网络；热点断开后本页会失联，属正常。</div>
   <div class="card" id="info">
     <div class="row"><span class="k">状态</span><span class="v">加载中...</span></div>
   </div>
@@ -332,15 +341,14 @@ const char kDeviceHtml[] PROGMEM = R"HTML(
     <label style="margin-top:12px">每日自动同步时间</label>
     <select id="syncHour"></select>
     <div class="tip">接口路径写死在固件；此处只配域名/端口等前缀。主地址留空用默认值。请求时先试主，失败再试备，下次仍先主。同步时间为本地整点，小程序模式下每天自动拉取一次。</div>
-    <button type="button" id="btnSave">保存设置</button>
-    <button type="button" class="ok" id="btnFinish">完成并重启</button>
+    <button type="button" class="ok" id="btnFinish">保存并重启</button>
     <div class="tip" id="tip"></div>
     <div class="done-box" id="doneBox">
       <div class="tip ok" style="margin:0 0 8px">设备即将重启，热点会关闭，本页可能马上失联。请先把手机切回家里 WiFi，再用下方地址打开管理页：</div>
       <a id="adminLink" href="#" target="_blank" rel="noopener"></a>
       <div class="done-actions">
         <button type="button" class="ghost" id="btnCopy">复制地址</button>
-        <button type="button" id="btnOpen">打开管理页</button>
+        <button type="button" class="ok" id="btnOpen">打开管理页</button>
       </div>
     </div>
   </div>
@@ -411,14 +419,6 @@ async function load(){
     $('info').innerHTML='<div class="row"><span class="k">错误</span><span class="v" style="color:#dc2626">加载失败</span></div>';
   }
 }
-async function saveApi(){
-  tip.textContent='保存中...';tip.className='tip';
-  try{
-    const t=await(await fetch('/api-base',{method:'POST',body:apiForm()})).text();
-    tip.textContent=t||'已保存';tip.className='tip ok';
-    load();
-  }catch(e){tip.textContent='保存失败：'+e;tip.className='tip err';}
-}
 async function finish(){
   tip.textContent='正在保存并重启...';tip.className='tip';
   $('btnFinish').disabled=true;
@@ -443,7 +443,7 @@ async function copyUrl(){
     tip.textContent='已复制：'+adminUrl;tip.className='tip ok';
   }catch(e){tip.textContent='复制失败，请长按链接手动复制';tip.className='tip err';}
 }
-$('btnSave').onclick=saveApi;$('btnFinish').onclick=finish;
+$('btnFinish').onclick=finish;
 $('btnCopy').onclick=copyUrl;
 $('btnOpen').onclick=()=>{if(adminUrl)location.href=adminUrl;};
 if(location.hostname==='192.168.8.1'){$('apBanner').classList.add('show');}
