@@ -14,14 +14,16 @@ namespace buttons {
 
 namespace {
 
-constexpr uint32_t kDebounceMs = 50;
+constexpr uint32_t kDebounceMs = 20;       // 机械按键常用消抖（原 50ms 易吞掉快连点）
 constexpr uint32_t kShortMaxMs = 800;
 constexpr uint32_t kActionLongMs = 2000;  // 执行键长按：到点即触发，不等松手
-constexpr uint32_t kDoubleClickMs = 400;  // 两次短按间隔上限
+// 双击窗口：第一次松手 → 第二次按下（对齐 Android DOUBLE_TAP 语义）
+// 时长取 Windows/macOS 默认 500ms（Android 触屏为 300ms，实体键偏松）
+constexpr uint32_t kDoubleClickMs = 500;
 constexpr uint32_t kReconfigMs = 3000;
 constexpr uint32_t kFactoryMs = 8000;
 
-// 短按后等窗口：窗口内再短按报双击；模式键超时丢弃（单击无效），执行键超时报单击
+// 短按后等窗口：窗口内再按下报双击；模式键超时丢弃（单击无效），执行键已在首次松手时报单击
 bool g_modeClickPending = false;
 uint32_t g_modeClickAt = 0;
 bool g_actionClickPending = false;
@@ -34,7 +36,7 @@ struct Btn {
   uint32_t lastChange;
   uint32_t pressStart;
   bool pressed;
-  bool longFired;  // 长按已到点触发（松手忽略）：执行键 2s / 系统键 8s
+  bool longFired;  // 已消费（长按到点 / 双击到点），松手忽略
   uint8_t stage;   // 保留字段（未用）
 };
 
@@ -46,30 +48,6 @@ void setupPin(Btn& b) {
   pinMode(b.pin, INPUT_PULLUP);
   b.lastRaw = digitalRead(b.pin);
   b.stableLow = (b.lastRaw == LOW);
-}
-
-// 返回释放时的按住时长；按下中返回 0 且不产生事件（系统键边沿在 poll 里处理）
-uint32_t updateRelease(Btn& b) {
-  bool raw = digitalRead(b.pin) == LOW;
-  uint32_t now = millis();
-  if (raw != b.lastRaw) {
-    b.lastRaw = raw;
-    b.lastChange = now;
-  }
-  if (now - b.lastChange < kDebounceMs) return 0;
-
-  if (raw && !b.pressed) {
-    b.pressed = true;
-    b.pressStart = now;
-    b.longFired = false;
-    b.stage = 0;
-    return 0;
-  }
-  if (!raw && b.pressed) {
-    b.pressed = false;
-    return now - b.pressStart;
-  }
-  return 0;
 }
 
 }  // namespace
@@ -109,17 +87,34 @@ Event poll(bool busy) {
     }
   }
 
-  // 模式键：仅双击切换；单击超时丢弃（防误触）
+  // 模式键：仅双击；第一次松手开窗口，第二次按下即确认（单击超时丢弃）
   {
-    uint32_t modeHeld = updateRelease(g_mode);
-    if (modeHeld > 0 && modeHeld < kShortMaxMs) {
-      uint32_t now = millis();
-      if (g_modeClickPending && (now - g_modeClickAt) <= kDoubleClickMs) {
-        g_modeClickPending = false;
-        return Event::ModeDouble;
+    bool raw = digitalRead(g_mode.pin) == LOW;
+    uint32_t now = millis();
+    if (raw != g_mode.lastRaw) {
+      g_mode.lastRaw = raw;
+      g_mode.lastChange = now;
+    }
+    if (now - g_mode.lastChange >= kDebounceMs) {
+      if (raw && !g_mode.pressed) {
+        g_mode.pressed = true;
+        g_mode.pressStart = now;
+        g_mode.longFired = false;
+        if (g_modeClickPending && (now - g_modeClickAt) <= kDoubleClickMs) {
+          g_modeClickPending = false;
+          g_mode.longFired = true;  // 本轮已作双击，松手忽略
+          return Event::ModeDouble;
+        }
+      } else if (!raw && g_mode.pressed) {
+        bool consumed = g_mode.longFired;
+        uint32_t held = now - g_mode.pressStart;
+        g_mode.pressed = false;
+        g_mode.longFired = false;
+        if (!consumed && held > 0 && held < kShortMaxMs) {
+          g_modeClickPending = true;
+          g_modeClickAt = now;
+        }
       }
-      g_modeClickPending = true;
-      g_modeClickAt = now;
     }
   }
   if (g_modeClickPending && (millis() - g_modeClickAt) > kDoubleClickMs) {
@@ -145,7 +140,7 @@ Event poll(bool busy) {
     return Event::None;
   }
 
-  // 执行键：长按 2s 到点即触发（不等松手）；短按/双击仍在松手判定
+  // 执行键：长按 2s 到点即触发；双击=第一次松手后窗口内再按下；短按在首次松手立刻报
   {
     bool raw = digitalRead(g_action.pin) == LOW;
     uint32_t now = millis();
@@ -158,6 +153,11 @@ Event poll(bool busy) {
         g_action.pressed = true;
         g_action.pressStart = now;
         g_action.longFired = false;
+        if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
+          g_actionClickPending = false;
+          g_action.longFired = true;  // 本轮已作双击，松手忽略、也不进长按
+          return Event::ActionDouble;
+        }
       } else if (raw && g_action.pressed) {
         if (!g_action.longFired && (now - g_action.pressStart) >= kActionLongMs) {
           g_action.longFired = true;
@@ -165,15 +165,10 @@ Event poll(bool busy) {
           return Event::ActionLong;
         }
       } else if (!raw && g_action.pressed) {
-        bool wasLong = g_action.longFired;
+        bool consumed = g_action.longFired;
         g_action.pressed = false;
         g_action.longFired = false;
-        if (!wasLong) {
-          // 短按：立刻报单击（未绑定可马上 sync）；窗口内再按仍可升格为双击
-          if (g_actionClickPending && (now - g_actionClickAt) <= kDoubleClickMs) {
-            g_actionClickPending = false;
-            return Event::ActionDouble;
-          }
+        if (!consumed) {
           g_actionClickPending = true;
           g_actionClickAt = now;
           return Event::ActionShort;
